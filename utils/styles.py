@@ -42,6 +42,21 @@ def get_custom_css():
         border-color: #1f77b4;
     }
     
+    /* Streamlit 기본 사이드바 요소 숨기기 */
+    .css-1d391kg .css-1v0mbdj {
+        display: none !important;
+    }
+    
+    /* 사이드바 상단 검색/제안 영역 숨기기 */
+    .css-1d391kg > div:first-child {
+        display: none !important;
+    }
+    
+    /* 사이드바에서 불필요한 요소들 숨기기 */
+    .css-1d391kg .stSearch {
+        display: none !important;
+    }
+    
     /* 카드 스타일 */
     .pipeline-card {
         background-color: #ffffff;
@@ -79,6 +94,12 @@ def get_custom_css():
     .status-new {
         background-color: #cce5ff;
         color: #004085;
+    }
+    
+    /* 사이드바 제목 스타일 */
+    .css-1d391kg h1 {
+        margin-top: 0;
+        padding-top: 1rem;
     }
 </style>
 """

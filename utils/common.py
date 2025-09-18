@@ -19,7 +19,12 @@ def set_page_config():
         page_title="AI Medical Pipeline",
         page_icon="🏥",
         layout="wide",
-        initial_sidebar_state="expanded"
+        initial_sidebar_state="expanded",
+        menu_items={
+            'Get Help': None,
+            'Report a bug': None,
+            'About': None
+        }
     )
 
 def get_pipeline_categories():
