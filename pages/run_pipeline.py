@@ -4,7 +4,7 @@
 import streamlit as st
 from utils.common import show_progress_simulation
 
-# 담당 : sjhwang
+# 담당 : sjhwang @ 
 
 def render():
     """파이프라인 실행 페이지 렌더링"""
