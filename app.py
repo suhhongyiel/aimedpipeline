@@ -7,7 +7,7 @@ import streamlit as st
 # 모듈 임포트
 from utils.common import set_page_config, init_session_state, render_sidebar
 from utils.styles import get_custom_css
-from pages import home, select_pipeline, run_pipeline, download_results
+from app_pages import home, select_pipeline, run_pipeline, download_results
 
 def main():
     """메인 애플리케이션 함수"""
