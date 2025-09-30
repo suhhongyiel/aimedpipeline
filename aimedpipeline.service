@@ -1,0 +1,15 @@
+[Unit]
+Description=AI Medical Pipeline Streamlit App
+After=network.target
+
+[Service]
+Type=simple
+User=admin1
+WorkingDirectory=/private/hysuh/07-pipeline
+Environment=PATH=/home/admin1/fsl/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/admin1/fsl/bin/streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
