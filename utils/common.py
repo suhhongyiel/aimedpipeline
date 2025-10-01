@@ -31,15 +31,8 @@ def get_pipeline_categories():
     """파이프라인 카테고리 데이터 반환"""
     return {
         "의료 영상 분석": [
-            {"name": "X-Ray 분석", "description": "흉부 X-Ray 이상 탐지", "status": "Available"},
-            {"name": "CT 스캔 분석", "description": "뇌 CT 스캔 병변 검출", "status": "Available"},
-            {"name": "MRI 분석", "description": "MRI 영상 종양 분류", "status": "Beta"}
+            {"name": "MRI 분석", "description": "MRI 영상 분석을 하는 파이프라인입니다.", "status": "Beta"}
         ],
-        "임상 데이터 분석": [
-            {"name": "혈액 검사 분석", "description": "혈액 검사 결과 이상치 탐지", "status": "Available"},
-            {"name": "심전도 분석", "description": "ECG 신호 부정맥 검출", "status": "Available"},
-            {"name": "환자 위험도 평가", "description": "다중 지표 기반 위험도 산출", "status": "New"}
-        ]
     }
 
 def get_sample_recent_data():

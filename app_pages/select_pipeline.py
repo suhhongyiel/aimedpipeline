@@ -62,10 +62,10 @@ def render():
     st.markdown("### 📊 Pipeline Comparison")
     
     comparison_data = {
-        "Pipeline": ["X-Ray 분석", "CT 스캔 분석", "MRI 분석", "혈액 검사 분석", "심전도 분석"],
-        "Processing Time": ["~2.1s", "~4.7s", "~6.3s", "~1.8s", "~3.2s"],
-        "Accuracy": ["94.5%", "96.2%", "92.8%", "97.1%", "95.3%"],
-        "Supported Formats": ["JPG, PNG, DICOM", "DICOM", "DICOM", "CSV, Excel", "CSV, TXT"]
+        "Pipeline": [ "MRI 분석"],
+        "Processing Time": [ "~6.3s"],
+        "Accuracy": [ "92.8%"],
+        "Supported Formats": [ "DICOM"]
     }
     
     import pandas as pd

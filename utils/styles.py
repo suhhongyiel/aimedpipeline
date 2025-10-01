@@ -66,6 +66,7 @@ def get_custom_css():
         margin: 8px 0;
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         transition: box-shadow 0.3s ease;
+        color: #111827; /* 흰 배경에 글자 보이게 */
     }
     
     .pipeline-card:hover {
