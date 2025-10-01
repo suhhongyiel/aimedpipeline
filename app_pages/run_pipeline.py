@@ -2,7 +2,9 @@
 파이프라인 실행 페이지 모듈
 """
 import streamlit as st
+import time
 from utils.common import show_progress_simulation
+from utils.job_log_mock import get_mock_log
 
 # 담당 : sjhwang @ 
 
@@ -134,7 +136,16 @@ def render():
             else:
                 with st.container():
                     st.markdown("### 🔄 Processing Status")
-                    show_progress_simulation()
+                    # show_progress_simulation()
+                    progress_bar = st.progress(0)
+                    log_box = st.empty()  # 로그 표시용
+
+                    for percent in range(101):
+                        log_box.info(get_mock_log(percent))
+                        progress_bar.progress(percent)
+                        time.sleep(0.03)  # 너무 느리면 줄여도 됨
+
+                    log_box.success("🎉 작업이 완료되었습니다!")  # 최종 성공 메시지
                     
                     # 가상의 결과 미리보기
                     st.markdown("### 📊 Results Preview")
