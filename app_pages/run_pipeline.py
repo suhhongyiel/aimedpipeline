@@ -3,8 +3,12 @@
 """
 import streamlit as st
 import time
+import requests
 from utils.common import show_progress_simulation
 from utils.job_log_mock import get_mock_log
+
+# FastAPI 서버 주소
+FASTAPI_SERVER_URL = "http://localhost:8000"
 
 # 담당 : sjhwang @ 
 
@@ -28,15 +32,11 @@ def render():
     
     # 파이프라인에 따라 다른 파일 타입 허용
     pipeline_formats = {
-        "X-Ray 분석": ['jpg', 'jpeg', 'png', 'dicom'],
-        "CT 스캔 분석": ['dicom', 'nii', 'nrrd'],
-        "MRI 분석": ['dicom', 'nii', 'nrrd'],
-        "혈액 검사 분석": ['csv', 'xlsx', 'xls'],
-        "심전도 분석": ['csv', 'txt', 'edf'],
-        "환자 위험도 평가": ['csv', 'xlsx', 'json']
+        "MRI 분석": ['dicom', 'nii', 'nrrd']
     }
     
     allowed_types = pipeline_formats.get(st.session_state.selected_pipeline, ['jpg', 'png', 'csv'])
+    # allowed_types = pipeline_formats.get(st.session_state.selected_pipeline, [])
     
     uploaded_files = st.file_uploader(
         f"Upload your {st.session_state.selected_pipeline} data files",
@@ -134,37 +134,54 @@ def render():
             if not uploaded_files:
                 st.error("❌ Please upload data files first!")
             else:
-                with st.container():
-                    st.markdown("### 🔄 Processing Status")
-                    # show_progress_simulation()
-                    progress_bar = st.progress(0)
-                    log_box = st.empty()  # 로그 표시용
+                st.markdown("### 🔄 Processing Status")
+                progress_bar = st.progress(0, text="Initializing...")
+                log_box = st.empty()
 
-                    for percent in range(101):
-                        log_box.info(get_mock_log(percent))
-                        progress_bar.progress(percent)
-                        time.sleep(0.03)  # 너무 느리면 줄여도 됨
+                try:
+                    # 1. FastAPI 서버에 작업 실행 요청
+                    log_box.info("▶️ Sending job request to the server...")
+                    res = requests.post(f"{FASTAPI_SERVER_URL}/run-job", json={"job_type": st.session_state.selected_pipeline})
+                    res.raise_for_status()  # HTTP 오류 발생 시 예외 발생
+                    job_id = res.json()["job_id"]
+                    log_box.info(f"✅ Job registered successfully! (Job ID: {job_id})")
+                    progress_bar.progress(10, text="Job Queued...")
 
-                    log_box.success("🎉 작업이 완료되었습니다!")  # 최종 성공 메시지
-                    
-                    # 가상의 결과 미리보기
+                    # 2. 작업 상태를 주기적으로 확인
+                    while True:
+                        res = requests.get(f"{FASTAPI_SERVER_URL}/job-status/{job_id}")
+                        res.raise_for_status()
+                        job_info = res.json()
+                        
+                        status = job_info.get("status", "Unknown")
+                        log = job_info.get("log", "")
+                        
+                        log_box.info(log) # 로그 업데이트
+
+                        if status == "Running":
+                            progress_bar.progress(50, text="Processing...")
+                        elif status == "Completed":
+                            progress_bar.progress(100, text="Completed!")
+                            log_box.success("🎉 Job completed successfully!")
+                            break
+                        elif status == "Failed":
+                            progress_bar.progress(100, text="Failed!")
+                            log_box.error(f"❌ Job failed. Last log: {log}")
+                            break
+                        
+                        time.sleep(2) # 2초마다 상태 확인
+
+                    # 3. 작업 완료 후 결과 표시
+                    st.markdown("---")
                     st.markdown("### 📊 Results Preview")
                     
-                    if st.session_state.selected_pipeline == "X-Ray 분석":
+                    # 현재는 MRI 분석만 있으므로, 해당 결과만 표시
+                    if st.session_state.selected_pipeline == "MRI 분석":
                         col1, col2 = st.columns(2)
                         with col1:
-                            st.metric("이상 소견", "2/5", "검출됨")
+                            st.metric("분석된 슬라이스", "128/150", "85.3%")
                         with col2:
-                            st.metric("평균 신뢰도", "94.2%", "+2.1%")
-                    
-                    elif st.session_state.selected_pipeline == "혈액 검사 분석":
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("정상 범위", "85%", "+5%")
-                        with col2:
-                            st.metric("주의 필요", "12%", "-2%")
-                        with col3:
-                            st.metric("이상 수치", "3%", "-1%")
+                            st.metric("의심 영역", "3", "발견됨")
                     
                     # 다운로드 링크 제공
                     st.markdown("### 📥 Download Results")
@@ -190,3 +207,8 @@ def render():
                             file_name="config.json",
                             mime="application/json"
                         )
+                
+                except requests.exceptions.ConnectionError:
+                    st.error("❌ Connection Error: Could not connect to the FastAPI server. Is it running?")
+                except requests.exceptions.HTTPError as e:
+                    st.error(f"❌ HTTP Error: {e.response.status_code} - {e.response.text}")
