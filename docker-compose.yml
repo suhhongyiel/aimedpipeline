@@ -8,7 +8,21 @@ services:
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
+      - ./shared:/app/shared #추가
+      - ./dags:/app/dags
     environment:
       - STREAMLIT_SERVER_HEADLESS=true
       - STREAMLIT_SERVER_ENABLE_CORS=false
     restart: unless-stopped
+
+  airflow:
+    image: apache/airflow:2.9.1
+    command: standalone
+    environment:
+      - AIRFLOW_UID=50000
+      - AIRFLOW__API__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./dags:/opt/airflow/dags        # ✅ DAG 올리는 곳
+      - ./shared:/opt/airflow/shared    # ✅ Streamlit과 공유

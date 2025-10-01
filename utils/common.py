@@ -33,6 +33,9 @@ def get_pipeline_categories():
         "의료 영상 분석": [
             {"name": "MRI 분석", "description": "MRI 영상 분석을 하는 파이프라인입니다.", "status": "Beta"}
         ],
+        "사칙 연산 데모": [
+            {"name": "사칙연산 데모", "description": "숫자 2개와 연산자를 받아 Airflow로 계산", "status": "Available"}
+        ]
     }
 
 def get_sample_recent_data():
@@ -48,7 +51,7 @@ def get_sample_results_data():
     """샘플 결과 데이터 생성"""
     return pd.DataFrame({
         'Job ID': [f'JOB_{str(i).zfill(4)}' for i in range(1, 11)],
-        'Pipeline': np.random.choice(['X-Ray 분석', 'CT 스캔 분석', '혈액 검사 분석'], 10),
+        'Pipeline': np.random.choice(['sMRI 분석', 'fMRI 분석', 'dMRI 분석'], 10), # 여기 변경
         'Date': pd.date_range('2024-01-01', periods=10, freq='D'),
         'Status': np.random.choice(['Completed', 'Processing', 'Failed'], 10, p=[0.7, 0.2, 0.1]),
         'Files': np.random.randint(1, 20, 10),
@@ -108,3 +111,18 @@ def render_sidebar():
             - 📊 Detailed analytics
             - 💾 Easy data export
             """)
+# utils/common.py (맨 아래에 추가)
+import os, uuid
+
+def save_uploaded_files_to_inbox(files, base_dir="./shared/inbox"):
+    """업로드 파일들을 공유 인박스에 저장하고 경로를 반환"""
+    job_id = uuid.uuid4().hex[:12]
+    inbox_dir = os.path.join(base_dir, job_id)
+    os.makedirs(inbox_dir, exist_ok=True)
+    saved = []
+    for f in files:
+        dest = os.path.join(inbox_dir, f.name)
+        with open(dest, "wb") as fw:
+            fw.write(f.read())
+        saved.append(dest)
+    return job_id, inbox_dir, saved
