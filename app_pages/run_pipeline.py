@@ -2,24 +2,29 @@
 파이프라인 실행 페이지 모듈
 """
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 import os
 from utils.common import show_progress_simulation, save_uploaded_files_to_inbox
 from services import orchestrator
 
-from utils.airflow_client import trigger_dag, get_dag_run, get_task_instances # 데모(사칙연산용)
-
+from utils.airflow_client import trigger_dag, get_dag_run, get_task_instances,get_xcom,run_url # 데모(사칙연산용)
+try:
+    from utils.airflow_client import get_task_log
+except ImportError:
+    def get_task_log(*args, **kwargs):  # fallback
+        return ""
 # 담당 : sjhwang @ 
 
 # Airflow 접속 설정 (Streamlit secrets 사용)
 def _af_cfg():
     cfg = st.secrets.get("airflow", {})
     return dict(
-        base_url=cfg.get("base_url", "http://localhost:8080"),
+        base_url=cfg.get("base_url", "http://airflow:8080"),
         username=cfg.get("username"),
         password=cfg.get("password"),
         bearer_token=cfg.get("bearer_token"),
     )
-   
+
 # ------------------------- 사칙연산 데모 ------------------------- #
 def _render_arith_demo():
     st.subheader("사칙연산 데모 (Airflow)")
@@ -45,20 +50,51 @@ def _render_arith_demo():
     if run_id:
         st.markdown("---")
         st.markdown("### 🔄 진행상태")
-        _ = st.autorefresh(interval=3000, key="arith_poll")
+        st_autorefresh(interval=3000, key="arith_poll")
 
-        run = get_dag_run(dag_id="arith_pipeline", dag_run_id=run_id, **_af_cfg())
-        tis = get_task_instances(dag_id="arith_pipeline", dag_run_id=run_id, **_af_cfg())
+        af = _af_cfg()
+        run = get_dag_run(dag_id="arith_pipeline", dag_run_id=run_id, **af)
+        tis = get_task_instances(dag_id="arith_pipeline", dag_run_id=run_id, **af)
+
         total = max(len(tis), 1)
-        done = sum(t["state"] in ("success", "skipped") for t in tis)
+        done = sum((t.get("state") in ("success", "skipped")) for t in tis)
+        percent = int(100 * done / total)
 
-        st.progress(int(100 * done / total))
-        st.write(f"State: **{run.get('state','queued')}**  |  {done}/{total} tasks")
+        # 상태 바/텍스트
+        st.progress(percent)
+        state = run.get("state", "queued")
+        emoji = {"queued":"⏳","running":"🚀","success":"✅","failed":"❌"}.get(state,"ℹ️")
+        st.write(f"{emoji} State: **{state}** | {done}/{total} tasks")
 
         with st.expander("Tasks"):
-            st.table([{"task_id": t["task_id"], "state": t["state"]} for t in tis])
+            st.table([{"task_id": t["task_id"], "state": t.get("state")} for t in tis])
 
-        # 결과 리포트 (Airflow가 작성)
+        # 성공 시 결과(XCom)
+        if state == "success":
+            op = get_xcom(dag_id="arith_pipeline", dag_run_id=run_id,
+                        task_id="parse_conf", key="op", **af)
+            task_id = f"do_{op or 'add'}"
+            result = get_xcom(dag_id="arith_pipeline", dag_run_id=run_id,
+                            task_id=task_id, key="result", **af)
+            if result is not None:
+                st.success(f"Result: {result}")
+
+        # 실패 시 어떤 태스크가 왜 실패했는지 로그까지 노출
+        if state == "failed":
+            failed = [t for t in tis if t.get("state") == "failed"]
+            if failed:
+                st.error("실패한 태스크가 있습니다.")
+                for t in failed:
+                    with st.expander(f"💥 {t['task_id']} log"):
+                        # try_number 필드가 없으면 1로
+                        try_num = t.get("try_number", 1)
+                        log = get_task_log(dag_id="arith_pipeline", dag_run_id=run_id,
+                                        task_id=t["task_id"], try_number=try_num, **af)
+                        st.code(log or "(no log)")
+            else:
+                st.error("실패 상태이지만 실패 태스크 목록을 불러오지 못했습니다.")
+
+        # 보고서 파일
         report = f"./shared/artifacts/arith/{run_id}/report.html"
         if os.path.exists(report):
             st.markdown("### 📊 결과 리포트")
@@ -67,10 +103,12 @@ def _render_arith_demo():
         else:
             st.info("보고서 준비 중…")
 
+
+
 # ------------------------- MRI 파이프라인 ------------------------- #
 def _render_mri():
     st.subheader("MRI 분석 파이프라인 (Airflow)")
- 
+
     
     # 파일 업로드 섹션
     st.markdown("#### 📁 Data Upload")
@@ -230,7 +268,7 @@ def _render_mri():
                             file_name="config.json",
                             mime="application/json"
                         )
-  # 실행 백엔드 선택
+# 실행 백엔드 선택
     backend = st.radio("Execution backend", ["Local (Simulated)", "Airflow"], index=1, horizontal=True)
 
     # === Local (기존 시뮬레이션) ===========================================
@@ -284,7 +322,7 @@ def _render_mri():
     if dag_run_id:
         st.markdown("---")
         st.markdown("### 🔄 Processing Status")
-        _ = st.autorefresh(interval=3000, key="mri_poll")
+        st_autorefresh(interval=3000, key="mri_poll")
 
         status = orchestrator.get_status(dag_run_id)
         st.progress(status["progress"])
@@ -296,7 +334,7 @@ def _render_mri():
         # 실패 리포트
         if status["failed_tasks"]:
             st.error(f"❌ Failed tasks: {', '.join(status['failed_tasks'])}")
-            st.link_button("Open in Airflow", status["airflow_url"])
+            
 
         # 성공 시 결과 리포트 표시
         if status["progress"] == 100 and not status["failed_tasks"]:
