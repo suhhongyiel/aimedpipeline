@@ -1,14 +1,67 @@
-version: '3.8'
+version : '3.8'
 
 services:
-  aimedpipeline:
+  streamlit:
     build: .
+    container_name: aimedpipeline_streamlit
     ports:
       - "8501:8501"
+    environment:
+      STREAMLIT_SERVER_HEADLESS: "true"
+      STREAMLIT_SERVER_ENABLE_CORS: "false"
+      FASTAPI_SERVER_URL: http://backend:8000
     volumes:
+      - ./:/app
       - ./data:/app/data
       - ./logs:/app/logs
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: aimedpipeline_backend
+    ports:
+      - "8000:8000"
     environment:
-      - STREAMLIT_SERVER_HEADLESS=true
-      - STREAMLIT_SERVER_ENABLE_CORS=false
+      AIRFLOW_BASE_URL: http://airflow:8080
+      AIRFLOW_DAG_ID: mri_pipeline
+      AIRFLOW_USER: admin
+      AIRFLOW_PASSWORD: admin
+    volumes:
+      - ./logs/backend:/app/logs
+    depends_on:
+      - airflow
+    restart: unless-stopped
+
+  airflow:
+    image: apache/airflow:2.9.1
+    container_name: aimedpipeline_airflow
+    user: "50000:0"   
+    ports:
+      - "8080:8080"
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
+      AIRFLOW_USER: admin
+      AIRFLOW_PASSWORD: admin
+      FAIL_RATE: "0.2"
+      PATH: /home/airflow/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+    command: >
+      bash -lc "
+        airflow db migrate &&
+        airflow users create --username $${AIRFLOW_USER} --password $${AIRFLOW_PASSWORD} --firstname Admin --lastname User --role Admin --email admin@example.com || true &&
+        airflow webserver -p 8080 &
+        exec airflow scheduler"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
     restart: unless-stopped
