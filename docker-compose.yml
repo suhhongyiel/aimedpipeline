@@ -1,4 +1,21 @@
 services:
+  postgres:
+    image: postgres:13
+    container_name: aimedpipeline_postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+    restart: unless-stopped
+
   streamlit:
     build: .
     container_name: aimedpipeline_streamlit
@@ -37,29 +54,37 @@ services:
   airflow:
     image: apache/airflow:2.9.1
     container_name: aimedpipeline_airflow
-    user: "50000:0"   
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "8080:8080"
     environment:
       AIRFLOW__CORE__LOAD_EXAMPLES: "False"
-      AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
-      AIRFLOW_USER: admin
-      AIRFLOW_PASSWORD: admin
-      FAIL_RATE: "0.2"
-      PATH: /home/airflow/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: ""
     volumes:
       - ./airflow/dags:/opt/airflow/dags
-      - ./airflow/logs:/opt/airflow/logs
+      - airflow_logs:/opt/airflow/logs
+    user: "0:0"
     command: >
-      bash -lc "
-        airflow db migrate &&
-        airflow users create --username $${AIRFLOW_USER} --password $${AIRFLOW_PASSWORD} --firstname Admin --lastname User --role Admin --email admin@example.com || true &&
+      bash -c "
+        mkdir -p /opt/airflow/logs &&
+        chmod -R 777 /opt/airflow/logs &&
+        airflow db init &&
+        airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true &&
         airflow webserver -p 8080 &
         exec airflow scheduler"
-
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 10s
       timeout: 5s
       retries: 30
     restart: unless-stopped
+
+volumes:
+  postgres_db:
+  airflow_db:
+  airflow_logs:
