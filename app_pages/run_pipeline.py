@@ -58,7 +58,7 @@ def render():
     
     # 파이프라인에 따라 다른 파일 타입 허용
     pipeline_formats = {
-        "MRI 분석": ['dicom', 'nii', 'nrrd']
+        "MRI 분석": ['dicom', 'nii', 'nrrd', 'nii.gz']
     }
     
     allowed_types = pipeline_formats.get(st.session_state.selected_pipeline, ['jpg', 'png', 'csv'])

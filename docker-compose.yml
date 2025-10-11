@@ -1,11 +1,9 @@
-version : '3.8'
-
 services:
   streamlit:
     build: .
     container_name: aimedpipeline_streamlit
     ports:
-      - "8501:8501"
+      - "8502:8501"
     environment:
       STREAMLIT_SERVER_HEADLESS: "true"
       STREAMLIT_SERVER_ENABLE_CORS: "false"
@@ -24,7 +22,7 @@ services:
       dockerfile: backend/Dockerfile
     container_name: aimedpipeline_backend
     ports:
-      - "8000:8000"
+      - "8003:8000"
     environment:
       AIRFLOW_BASE_URL: http://airflow:8080
       AIRFLOW_DAG_ID: mri_pipeline
