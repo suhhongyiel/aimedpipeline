@@ -6,10 +6,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # db 관련
 # --- DB 관련 import 수정 ---
-from .database import SessionLocal
-from .models import JobLog
-from . import models
-from .database import engine
+from database import SessionLocal
+from models import JobLog
+import models
+from database import engine
 from sqlalchemy.orm import Session
 from fastapi import Depends 
 

@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, DateTime
 import datetime
-from .database import Base
+from database import Base
 
 class JobLog(Base):
     __tablename__ = 'job_logs'
