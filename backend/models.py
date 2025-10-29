@@ -10,3 +10,11 @@ class JobLog(Base):
     status = Column(String)
     log = Column(String)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+class CommandLog(Base):
+    __tablename__ = "command_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    command = Column(String)
+    output = Column(String)
+    error = Column(String)
+    timestamp = Column(DateTime, default=datetime.datetime.utcnow)

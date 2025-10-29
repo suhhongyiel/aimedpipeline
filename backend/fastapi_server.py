@@ -1,8 +1,9 @@
 import os
 import uuid
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+import subprocess
 
 # db 관련
 # --- DB 관련 import 수정 ---
@@ -12,6 +13,7 @@ import models
 from database import engine
 from sqlalchemy.orm import Session
 from fastapi import Depends 
+from models import CommandLog
 
 # ===== 환경변수 기본값 =====
 AIRFLOW_BASE = os.getenv("AIRFLOW_BASE_URL", "http://airflow:8080")
@@ -44,6 +46,9 @@ def get_db():
     finally:
         db.close()
 
+@app.on_event("startup")
+def on_startup():
+    models.Base.metadata.create_all(bind=engine)
 
 @app.get("/")
 def root():
@@ -119,3 +124,17 @@ def job_status(job_id: str):
             "airflow_ui": "mock_url",
             "log": f"Mock DagRun {job_id} is mocked"
         }
+    
+@app.post("/run-command")
+async def run_command(data: dict):
+    cmd = data.get("cmd")
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    output = result.stdout
+    error = result.stderr
+
+    session = SessionLocal()
+    log = CommandLog(command=cmd, output=result.stdout, error=result.stderr)
+    session.add(log)
+    session.commit()
+    session.close()
+    return {"output": output, "error": error}
