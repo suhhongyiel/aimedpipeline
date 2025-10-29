@@ -3,6 +3,9 @@
 """
 import streamlit as st
 from utils.common import get_pipeline_categories
+import requests
+import os
+
 
 def render():
     """파이프라인 선택 페이지 렌더링"""
@@ -49,6 +52,18 @@ def render():
         
         st.markdown("---")
     
+    # 명령어 실행
+    st.markdown("### 🚀 명령어 실행 (demo)")
+    cmd = st.text_input("명령어 입력 (ex. ls, cd ~, etc)")
+    if st.button("실행"):
+        # FastAPI 호출해서 명령 실행 결과 받아오기
+        resp = requests.post("http://localhost:8003/run-command", json={"cmd": cmd})
+        result = resp.json()
+        st.code(result["output"]) # 결과 출력
+        if result.get("error"):
+            st.error(result["error"])
+
+
     # 선택된 파이프라인 정보 표시
     if 'selected_pipeline' in st.session_state and st.session_state.selected_pipeline:
         st.markdown("### 🎯 Currently Selected Pipeline")
