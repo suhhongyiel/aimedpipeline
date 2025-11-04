@@ -82,7 +82,7 @@ def render_sidebar():
         st.markdown("---")
         
         # 메뉴 버튼들
-        menu_options = ['Home', 'Select Pipeline', 'Run Pipeline', 'Download Results']
+        menu_options = ['Home', 'MICA Pipeline', 'Select Pipeline', 'Run Pipeline', 'Download Results']
         
         for menu in menu_options:
             if st.button(menu, key=f"menu_{menu}", use_container_width=True):

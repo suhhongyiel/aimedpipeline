@@ -1,197 +1,284 @@
 """
-결과 다운로드 페이지 모듈
+결과 다운로드 페이지 모듈 - MICA Pipeline 통합
 """
 import streamlit as st
 import pandas as pd
-from utils.common import get_sample_results_data
+import requests
+import os
+from datetime import datetime
+
+# FastAPI 서버 주소
+FASTAPI_SERVER_URL = os.getenv(
+    "FASTAPI_SERVER_URL",
+    st.secrets.get("api", {}).get("fastapi_base_url", "http://localhost:8000")
+)
+
+def fetch_mica_jobs():
+    """MICA Pipeline Job 목록을 가져옵니다."""
+    try:
+        response = requests.get(f"{FASTAPI_SERVER_URL}/mica-jobs", timeout=10)
+        if response.status_code == 200:
+            return response.json()
+        return {"success": False, "jobs": [], "summary": {"processing": 0, "completed": 0, "failed": 0}}
+    except Exception as e:
+        st.error(f"❌ Failed to fetch MICA jobs: {str(e)}")
+        return {"success": False, "jobs": [], "summary": {"processing": 0, "completed": 0, "failed": 0}}
+
+def format_duration(seconds):
+    """시간을 읽기 쉬운 형식으로 변환"""
+    if seconds is None:
+        return "N/A"
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+def status_emoji(status):
+    """상태에 따른 이모지 반환"""
+    if status == "completed":
+        return "✅"
+    elif status == "processing":
+        return "⏳"
+    elif status == "failed":
+        return "❌"
+    return "❓"
 
 def render():
     """결과 다운로드 페이지 렌더링"""
-    st.title("📥 Download Results")
+    st.title("📥 Download Results & Pipeline Status")
     st.markdown("---")
     
-    st.markdown("""
-    ## Processing History
+    # MICA Pipeline Job 데이터 가져오기
+    jobs_response = fetch_mica_jobs()
     
-    완료된 파이프라인 작업의 결과를 다운로드할 수 있습니다.
-    """)
+    if not jobs_response.get("success"):
+        st.warning("⚠️ Failed to load MICA Pipeline jobs")
+        return
     
-    # 가상의 처리 결과 데이터
-    results_data = get_sample_results_data()
+    jobs = jobs_response.get("jobs", [])
+    summary = jobs_response.get("summary", {})
+    
+    # 통계 정보 표시
+    st.markdown("### 📊 MICA Pipeline Status Overview")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Total Jobs", len(jobs))
+    
+    with col2:
+        st.metric("⏳ Processing", summary.get("processing", 0))
+    
+    with col3:
+        st.metric("✅ Completed", summary.get("completed", 0))
+    
+    with col4:
+        st.metric("❌ Failed", summary.get("failed", 0))
+    
+    st.markdown("---")
+    
+    # 새로고침 버튼
+    if st.button("🔄 새로고침", key="refresh_results"):
+        st.rerun()
     
     # 필터링 옵션
-    st.markdown("### 🔍 Filter Results")
+    st.markdown("### 🔍 Filter Jobs")
     col1, col2, col3 = st.columns(3)
     
     with col1:
         status_filter = st.selectbox(
             "Status Filter",
-            options=['All', 'Completed', 'Processing', 'Failed'],
+            options=['All', 'Processing', 'Completed', 'Failed'],
             index=0
         )
     
     with col2:
-        pipeline_filter = st.selectbox(
-            "Pipeline Filter",
-            options=['All'] + list(results_data['Pipeline'].unique()),
+        # 프로세스 목록 추출
+        all_processes = list(set([job.get("processes", "").split(",")[0] for job in jobs if job.get("processes")]))
+        process_filter = st.selectbox(
+            "Process Filter",
+            options=['All'] + all_processes,
             index=0
         )
     
     with col3:
-        date_filter = st.date_input(
-            "From Date",
-            value=results_data['Date'].min(),
-            help="Show results from this date onwards"
+        # Subject 목록 추출
+        all_subjects = list(set([job.get("subject_id", "") for job in jobs if job.get("subject_id")]))
+        subject_filter = st.selectbox(
+            "Subject Filter",
+            options=['All'] + all_subjects,
+            index=0
         )
     
     # 필터 적용
-    filtered_data = results_data.copy()
+    filtered_jobs = jobs
     if status_filter != 'All':
-        filtered_data = filtered_data[filtered_data['Status'] == status_filter]
-    if pipeline_filter != 'All':
-        filtered_data = filtered_data[filtered_data['Pipeline'] == pipeline_filter]
-    
-    filtered_data = filtered_data[filtered_data['Date'] >= pd.Timestamp(date_filter)]
-    
-    # 통계 정보 표시
-    st.markdown("### 📊 Summary Statistics")
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Total Jobs", len(filtered_data))
-    
-    with col2:
-        completed_jobs = len(filtered_data[filtered_data['Status'] == 'Completed'])
-        st.metric("Completed", completed_jobs)
-    
-    with col3:
-        if completed_jobs > 0:
-            avg_accuracy = filtered_data[filtered_data['Status'] == 'Completed']['Accuracy'].mean()
-            st.metric("Avg Accuracy", f"{avg_accuracy:.1%}")
-        else:
-            st.metric("Avg Accuracy", "N/A")
-    
-    with col4:
-        total_files = filtered_data['Files'].sum()
-        st.metric("Total Files", total_files)
+        filtered_jobs = [j for j in filtered_jobs if j.get("status") == status_filter.lower()]
+    if process_filter != 'All':
+        filtered_jobs = [j for j in filtered_jobs if process_filter in j.get("processes", "")]
+    if subject_filter != 'All':
+        filtered_jobs = [j for j in filtered_jobs if j.get("subject_id") == subject_filter]
     
     # 결과 테이블
-    st.markdown("### 📋 Results Table")
+    st.markdown("### 📋 Job Results")
     
-    # 상태별 색상 표시를 위한 스타일링
+    if not filtered_jobs:
+        st.info("ℹ️ No jobs found with current filters.")
+        st.markdown("""
+        **💡 Suggestions:**
+        - Try changing the filter settings
+        - Run a new pipeline from the '🧠 MICA Pipeline' menu
+        """)
+        return
+    
+    # DataFrame으로 변환
+    df_data = []
+    for job in filtered_jobs:
+        df_data.append({
+            "Status": status_emoji(job.get("status", "")) + " " + job.get("status", "").capitalize(),
+            "Subject": job.get("subject_id", ""),
+            "Session": job.get("session_id", "-"),
+            "Process": job.get("processes", "").split(",")[0] if job.get("processes") else "-",
+            "Started": datetime.fromisoformat(job.get("started_at")).strftime("%Y-%m-%d %H:%M") if job.get("started_at") else "-",
+            "Duration": format_duration(job.get("duration")),
+            "Progress": f"{job.get('progress', 0):.0f}%",
+            "Job ID": job.get("job_id", "")
+        })
+    
+    df = pd.DataFrame(df_data)
+    
+    # 상태별 색상 표시
     def style_status(val):
-        if val == 'Completed':
+        if "✅" in str(val):
             return 'background-color: #d4edda; color: #155724'
-        elif val == 'Processing':
+        elif "⏳" in str(val):
             return 'background-color: #fff3cd; color: #856404'
-        elif val == 'Failed':
+        elif "❌" in str(val):
             return 'background-color: #f8d7da; color: #721c24'
         return ''
     
-    styled_data = filtered_data.style.applymap(style_status, subset=['Status'])
-    st.dataframe(styled_data, use_container_width=True)
+    styled_df = df.style.applymap(style_status, subset=['Status'])
+    st.dataframe(styled_df, use_container_width=True, hide_index=True)
     
-    # 다운로드 섹션
-    st.markdown("### 💾 Download Options")
+    st.markdown("---")
     
-    completed_jobs = filtered_data[filtered_data['Status'] == 'Completed']
+    # 상세 정보 및 다운로드
+    completed_jobs = [j for j in filtered_jobs if j.get("status") == "completed"]
     
-    if len(completed_jobs) > 0:
-        # 개별 작업 선택 다운로드
-        st.markdown("#### 📄 Individual Job Download")
-        selected_job = st.selectbox(
+    if completed_jobs:
+        st.markdown("### 💾 Download Completed Results")
+        
+        # 작업 선택
+        job_options = {
+            f"{job.get('subject_id', '')} - {job.get('processes', '').split(',')[0]} ({datetime.fromisoformat(job.get('started_at')).strftime('%Y-%m-%d %H:%M') if job.get('started_at') else ''})": job
+            for job in completed_jobs
+        }
+        
+        selected_job_name = st.selectbox(
             "Select Job to Download",
-            options=completed_jobs['Job ID'].tolist(),
+            options=list(job_options.keys()),
             help="Choose a specific job to download its results"
         )
         
-        # 선택된 작업 정보 표시
-        selected_job_info = completed_jobs[completed_jobs['Job ID'] == selected_job].iloc[0]
+        selected_job = job_options[selected_job_name]
         
+        # 선택된 작업 정보 표시
         col1, col2 = st.columns(2)
+        
         with col1:
             st.markdown(f"""
             **📋 Job Details:**
-            - Job ID: {selected_job_info['Job ID']}
-            - Pipeline: {selected_job_info['Pipeline']}
-            - Date: {selected_job_info['Date'].strftime('%Y-%m-%d')}
-            - Files Processed: {selected_job_info['Files']}
+            - **Job ID:** `{selected_job.get('job_id', '')}`
+            - **Subject:** `{selected_job.get('subject_id', '')}`
+            - **Session:** `{selected_job.get('session_id', '-')}`
+            - **Process:** `{selected_job.get('processes', '')}`
             """)
         
         with col2:
             st.markdown(f"""
-            **📊 Results:**
-            - Status: {selected_job_info['Status']}
-            - Accuracy: {selected_job_info['Accuracy']:.1%}
-            - Quality Score: {(selected_job_info['Accuracy'] * 100):.0f}/100
+            **📊 Execution Info:**
+            - **Status:** {status_emoji(selected_job.get('status', ''))} {selected_job.get('status', '').capitalize()}
+            - **Started:** {datetime.fromisoformat(selected_job.get('started_at')).strftime('%Y-%m-%d %H:%M:%S') if selected_job.get('started_at') else '-'}
+            - **Duration:** {format_duration(selected_job.get('duration'))}
+            - **Container:** `{selected_job.get('container_name', '')}`
             """)
         
-        # 다운로드 버튼들
-        col1, col2, col3 = st.columns(3)
+        # 로그 파일 표시
+        st.markdown("#### 📄 Log Files")
         
-        with col1:
-            st.download_button(
-                label="📄 Download Report (PDF)",
-                data=f"Analysis report for {selected_job}",
-                file_name=f"report_{selected_job}.pdf",
-                mime="application/pdf",
-                help="Download detailed analysis report"
-            )
-        
-        with col2:
-            st.download_button(
-                label="📊 Download Data (CSV)",
-                data=filtered_data.to_csv(index=False),
-                file_name=f"data_{selected_job}.csv",
-                mime="text/csv",
-                help="Download raw analysis data"
-            )
-        
-        with col3:
-            st.download_button(
-                label="🖼️ Download Images (ZIP)",
-                data=f"Processed images for {selected_job}",
-                file_name=f"images_{selected_job}.zip",
-                mime="application/zip",
-                help="Download processed images and visualizations"
-            )
-        
-        # 일괄 다운로드
-        st.markdown("#### 📦 Batch Download")
+        log_file = selected_job.get("log_file", "")
+        error_log_file = selected_job.get("error_log_file", "")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            if st.button("📥 Download All Completed Results", use_container_width=True):
-                st.success("🎉 Preparing batch download... This may take a few moments.")
-                st.info("💡 You will receive an email notification when the download is ready.")
+            if log_file:
+                st.text_input("Standard Output Log", value=log_file, disabled=True)
+                if st.button("📖 View Standard Log", key="view_std_log"):
+                    try:
+                        response = requests.get(
+                            f"{FASTAPI_SERVER_URL}/mica-log-content",
+                            params={"log_file": log_file, "lines": 200},
+                            timeout=10
+                        )
+                        if response.status_code == 200:
+                            log_data = response.json()
+                            with st.expander("📄 Standard Output", expanded=True):
+                                st.code(log_data.get("content", ""), language="log")
+                    except Exception as e:
+                        st.error(f"Failed to load log: {str(e)}")
         
         with col2:
-            st.download_button(
-                label="📋 Export Table (Excel)",
-                data=filtered_data.to_csv(index=False),  # 실제로는 Excel 형식으로 변환
-                file_name="pipeline_results.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
+            if error_log_file:
+                st.text_input("Error Log", value=error_log_file, disabled=True)
+                if st.button("⚠️ View Error Log", key="view_error_log"):
+                    try:
+                        response = requests.get(
+                            f"{FASTAPI_SERVER_URL}/mica-log-content",
+                            params={"log_file": error_log_file, "lines": 200},
+                            timeout=10
+                        )
+                        if response.status_code == 200:
+                            log_data = response.json()
+                            if log_data.get("content", "").strip():
+                                with st.expander("⚠️ Error Output", expanded=True):
+                                    st.code(log_data.get("content", ""), language="log")
+                            else:
+                                st.success("✅ No errors found!")
+                    except Exception as e:
+                        st.error(f"Failed to load error log: {str(e)}")
         
-        # 자동 다운로드 설정
-        st.markdown("#### ⚙️ Download Preferences")
+        st.markdown("---")
         
-        with st.expander("🔧 Auto-download Settings"):
-            auto_download = st.checkbox("Enable automatic download for completed jobs")
-            email_notifications = st.checkbox("Send email notifications", value=True)
-            download_format = st.selectbox(
-                "Default download format",
-                options=['PDF + Data', 'PDF Only', 'Data Only', 'All Files']
-            )
-            
-            if st.button("💾 Save Preferences"):
-                st.success("✅ Preferences saved successfully!")
-    
+        # 결과 파일 다운로드 (derivatives 디렉토리 기반)
+        st.markdown("#### 📦 Download Results")
+        st.info("💡 Results are saved in `/app/data/derivatives/` directory. Access the files directly on the server or use the file browser below.")
+        
     else:
-        st.info("ℹ️ No completed jobs available for download with current filters.")
-        st.markdown("**💡 Suggestions:**")
-        st.markdown("- Try changing the filter settings")
-        st.markdown("- Check if any pipelines are currently running")
-        st.markdown("- Run a new pipeline from the 'Run Pipeline' menu")
+        st.info("""
+        ℹ️ No completed jobs available for download.
+        
+        **💡 Next Steps:**
+        - Check the '⏳ Processing' jobs above
+        - Run a new pipeline from '🧠 MICA Pipeline' menu
+        - Review failed jobs and fix any issues
+        """)
+    
+    # Failed jobs 섹션
+    failed_jobs = [j for j in filtered_jobs if j.get("status") == "failed"]
+    if failed_jobs:
+        st.markdown("---")
+        st.markdown("### ❌ Failed Jobs")
+        st.warning(f"Found {len(failed_jobs)} failed job(s). Click to view error details:")
+        
+        for job in failed_jobs:
+            with st.expander(f"❌ {job.get('subject_id', '')} - {job.get('processes', '')}"):
+                st.markdown(f"""
+                **Job ID:** `{job.get('job_id', '')}`  
+                **Started:** {datetime.fromisoformat(job.get('started_at')).strftime('%Y-%m-%d %H:%M:%S') if job.get('started_at') else '-'}  
+                **Error Message:**
+                """)
+                if job.get("error_message"):
+                    st.code(job.get("error_message", ""), language="log")
+                else:
+                    st.text("No error message available. Check error log file.")

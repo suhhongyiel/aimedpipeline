@@ -45,8 +45,13 @@ services:
       AIRFLOW_DAG_ID: mri_pipeline
       AIRFLOW_USER: admin
       AIRFLOW_PASSWORD: admin
+      HOST_DATA_DIR: /private/hysuh/07-pipeline/data  # 호스트의 실제 데이터 경로
     volumes:
       - ./logs/backend:/app/logs
+      - ./:/app/workspace
+      - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock  # Docker 소켓 마운트
+    working_dir: /app/workspace/backend
     depends_on:
       - airflow
     restart: unless-stopped
@@ -68,9 +73,13 @@ services:
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - airflow_logs:/opt/airflow/logs
+      - /var/run/docker.sock:/var/run/docker.sock  # Docker 소켓 마운트 (MICA Pipeline 실행용)
+      - /private/hysuh/07-pipeline/data:/private/hysuh/07-pipeline/data  # 절대 경로로 마운트 (Docker 명령어에서 동일한 경로 사용)
     user: "0:0"
     command: >
       bash -c "
+        apt-get update -qq &&
+        apt-get install -y -qq docker.io curl &&
         mkdir -p /opt/airflow/logs &&
         chmod -R 777 /opt/airflow/logs &&
         airflow db init &&

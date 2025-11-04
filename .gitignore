@@ -73,8 +73,12 @@ Thumbs.db
 *.log
 logs/
 
-# Data files (if needed)
-# data/
-# *.csv
-# *.xlsx
-# *.json
+# Data files
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Airflow
+airflow/@eaDir/
+airflow/logs/

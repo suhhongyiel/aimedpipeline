@@ -233,17 +233,54 @@ def render():
                     if link:
                         link_box.markdown(f"🔗 **Airflow Grid**: [{link}]({link})")
 
-                    # 진행바
+                    # Crash 감지 및 실패한 task 분석
+                    failed_tasks = [t for t in tasks if (t.get("state") or "").lower() == "failed"]
+                    
+                    # 진행바 및 상태 표시
                     if status in ("RUNNING","QUEUED"):
                         progress_bar.progress(min(max(progress, 15), 95), text="Processing...")
+                        
+                        # 실행 중에도 실패한 task가 있으면 경고
+                        if failed_tasks:
+                            log_box.warning(f"⚠️ {len(failed_tasks)} task(s) failed during execution")
+                            
                     elif status == "SUCCESS":
                         progress_bar.progress(100, text="Completed!")
                         log_box.success("🎉 Job completed successfully!")
+                        
+                        # 성공했어도 재시도가 있었는지 확인
+                        retry_tasks = [t for t in tasks if t.get("try_number", 1) > 1]
+                        if retry_tasks:
+                            log_box.info(f"ℹ️ {len(retry_tasks)} task(s) required retry")
                         break
+                        
                     elif status == "FAILED":
                         progress_bar.progress(100, text="Failed!")
-                        log_box.error("❌ Job failed. See Airflow UI for details.")
+                        log_box.error(f"❌ Job failed with {len(failed_tasks)} failed task(s)")
+                        
+                        # 실패한 task 상세 정보 표시
+                        if failed_tasks:
+                            with st.expander("🔍 Failed Tasks Details", expanded=True):
+                                for task in failed_tasks:
+                                    st.error(f"""
+                                    **Task ID:** {task.get('task_id', 'Unknown')}
+                                    - **State:** {task.get('state', 'Unknown')}
+                                    - **Start:** {_fmt_time_short(task.get('start_date', ''))}
+                                    - **End:** {_fmt_time_short(task.get('end_date', ''))}
+                                    - **Tries:** {task.get('try_number', 0)}
+                                    """)
+                                
+                                st.markdown("💡 **Troubleshooting Tips:**")
+                                st.markdown("""
+                                - Check Airflow logs for detailed error messages
+                                - Verify input data format and completeness
+                                - Check system resources (memory, disk space)
+                                - Review task configuration and parameters
+                                """)
+                        
+                        st.markdown(f"🔗 [View detailed logs in Airflow]({link})")
                         break
+                        
                     else:
                         progress_bar.progress(min(progress, 95), text=f"{status.title()}...")
 
