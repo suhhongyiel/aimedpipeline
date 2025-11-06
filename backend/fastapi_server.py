@@ -668,7 +668,7 @@ async def run_mica_pipeline(data: dict):
         user = data.get("user", "anonymous")
         
         # 호스트의 실제 데이터 경로 (환경 변수에서 가져오기)
-        host_data_dir = os.getenv("HOST_DATA_DIR", "/private/hysuh/07-pipeline/data")
+        host_data_dir = os.getenv("HOST_DATA_DIR", "/data")
         
         # 필수 파라미터 확인 (컨테이너 내부 경로)
         bids_dir = data.get("bids_dir", "/app/data/bids")
