@@ -645,7 +645,7 @@ async def run_mica_via_airflow(
                           f"DAG Run ID: {run_id}\n"
                           f"User: {user}\n"
                           f"Subject: {subject_id}\n\n"
-                          f"💡 Airflow UI에서 실행 상태를 확인하세요: http://localhost:8080",
+                          f"💡 Airflow UI에서 실행 상태를 확인하세요: http://localhost:8081",
                 "timestamp": datetime.now().isoformat()
             }
         else:

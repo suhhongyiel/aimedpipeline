@@ -183,6 +183,7 @@ with DAG(
     max_active_runs=5,  # 최대 5개의 DAG 동시 실행
     concurrency=10,  # 최대 10개의 task 동시 실행
     description="MICA Pipeline - Multi-user neuroimaging processing pipeline",
+    is_paused_upon_creation=False,  # DAG 생성 시 자동으로 활성화
 ) as dag:
 
     # Task 1: 시작 로그

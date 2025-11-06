@@ -397,7 +397,7 @@ def render():
         )
         
         if use_airflow:
-            st.info("💡 Airflow UI에서 실행 상태를 확인하세요: http://localhost:8080 (admin/admin)")
+            st.info("💡 Airflow UI에서 실행 상태를 확인하세요: http://localhost:8081 (admin/admin)")
             
             # 사용자 이름 입력
             user_name = st.text_input(
@@ -534,7 +534,7 @@ def render():
                                 
                                 - **DAG Run ID:** `{result.get('dag_run_id', '-')}`
                                 - **User:** `{result.get('user', '-')}`
-                                - **Airflow UI:** [실행 상태 확인하기]({result.get('airflow_url', 'http://localhost:8080')})
+                                - **Airflow UI:** [실행 상태 확인하기]({result.get('airflow_url', 'http://localhost:8081')})
                                 
                                 💡 Airflow UI에서 실시간 로그와 진행 상황을 확인할 수 있습니다.
                                 """)
