@@ -45,7 +45,7 @@ services:
       AIRFLOW_DAG_ID: mri_pipeline
       AIRFLOW_USER: admin
       AIRFLOW_PASSWORD: admin
-      HOST_DATA_DIR: /data  # 컨테이너 내부 절대 경로
+      HOST_DATA_DIR: /home/admin1/Documents/aimedpipeline/data  # 호스트의 실제 절대 경로 (Docker-in-Docker용)
     volumes:
       - ./logs/backend:/app/logs
       - ./:/app/workspace
