@@ -34,6 +34,7 @@ class MicaPipelineJob(Base):
     progress = Column(Float, default=0.0)  # 0.0 ~ 100.0
     log_file = Column(String, nullable=True)  # 로그 파일 경로
     error_log_file = Column(String, nullable=True)  # 에러 로그 파일 경로
+    user = Column(String, nullable=True)  # 실행한 사용자
     started_at = Column(DateTime, default=datetime.datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
     error_message = Column(String, nullable=True)

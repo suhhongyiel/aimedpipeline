@@ -146,18 +146,29 @@ def render():
         """)
         return
     
+    # 선택 지우기 버튼
+    col_clear, col_spacer = st.columns([1, 4])
+    with col_clear:
+        if st.button("🗑️ 선택 지우기", key="clear_selection"):
+            if 'selected_jobs' in st.session_state:
+                del st.session_state['selected_jobs']
+            st.rerun()
+    
     # DataFrame으로 변환
     df_data = []
-    for job in filtered_jobs:
+    for i, job in enumerate(filtered_jobs):
         df_data.append({
+            "Select": False,  # 체크박스
             "Status": status_emoji(job.get("status", "")) + " " + job.get("status", "").capitalize(),
             "Subject": job.get("subject_id", ""),
             "Session": job.get("session_id", "-"),
             "Process": job.get("processes", "").split(",")[0] if job.get("processes") else "-",
+            "User": job.get("user", "anonymous"),
             "Started": datetime.fromisoformat(job.get("started_at")).strftime("%Y-%m-%d %H:%M") if job.get("started_at") else "-",
             "Duration": format_duration(job.get("duration")),
             "Progress": f"{job.get('progress', 0):.0f}%",
-            "Job ID": job.get("job_id", "")
+            "Job ID": job.get("job_id", ""),
+            "_job_data": job  # 원본 데이터 저장 (표시 안 됨)
         })
     
     df = pd.DataFrame(df_data)
@@ -172,8 +183,51 @@ def render():
             return 'background-color: #f8d7da; color: #721c24'
         return ''
     
-    styled_df = df.style.applymap(style_status, subset=['Status'])
-    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+    # _job_data 컬럼 제외하고 표시
+    display_df = df.drop(columns=['_job_data'])
+    styled_df = display_df.style.applymap(style_status, subset=['Status'])
+    
+    # 데이터 에디터로 표시 (체크박스 기능)
+    edited_df = st.data_editor(
+        styled_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Select": st.column_config.CheckboxColumn(
+                "Select",
+                help="Select jobs to delete",
+                default=False,
+            )
+        },
+        disabled=["Status", "Subject", "Session", "Process", "User", "Started", "Duration", "Progress", "Job ID"],
+        key="job_table"
+    )
+    
+    # 선택된 항목 삭제 버튼
+    selected_rows = edited_df[edited_df["Select"] == True]
+    if len(selected_rows) > 0:
+        st.warning(f"⚠️ {len(selected_rows)}개 항목이 선택되었습니다.")
+        if st.button(f"🗑️ 선택한 {len(selected_rows)}개 항목 삭제", type="primary"):
+            # 선택된 job ID 추출
+            selected_job_ids = []
+            for idx in selected_rows.index:
+                selected_job_ids.append(df.loc[idx, "_job_data"]["id"])
+            
+            # 삭제 API 호출
+            try:
+                for job_id in selected_job_ids:
+                    response = requests.delete(
+                        f"{FASTAPI_SERVER_URL}/mica-jobs/{job_id}",
+                        timeout=5
+                    )
+                    if response.status_code != 200:
+                        st.error(f"Failed to delete job {job_id}")
+                
+                st.success(f"✅ {len(selected_job_ids)}개 항목이 삭제되었습니다.")
+                time.sleep(1)
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ 삭제 실패: {str(e)}")
     
     st.markdown("---")
     

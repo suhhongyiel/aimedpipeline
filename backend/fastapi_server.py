@@ -625,7 +625,8 @@ async def run_mica_via_airflow(
                     status="processing",
                     progress=0.0,
                     log_file=f"{output_dir}/logs/{processes[0]}/fin/{container_name}.log",
-                    error_log_file=f"{output_dir}/logs/{processes[0]}/error/{container_name}_error.log"
+                    error_log_file=f"{output_dir}/logs/{processes[0]}/error/{container_name}_error.log",
+                    user=user
                 )
                 session.add(mica_job)
                 session.commit()
@@ -1339,6 +1340,7 @@ async def get_mica_jobs(status: str = None):
                     "progress": job.progress,
                     "log_file": job.log_file,
                     "error_log_file": job.error_log_file,
+                    "user": job.user if hasattr(job, 'user') else "anonymous",
                     "started_at": job.started_at.isoformat() if job.started_at else None,
                     "completed_at": job.completed_at.isoformat() if job.completed_at else None,
                     "error_message": job.error_message,
@@ -1357,6 +1359,32 @@ async def get_mica_jobs(status: str = None):
             }
         finally:
             db.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/mica-jobs/{job_id}")
+async def delete_mica_job(job_id: int):
+    """MICA Pipeline Job을 삭제합니다."""
+    try:
+        db = SessionLocal()
+        try:
+            job = db.query(MicaPipelineJob).filter(MicaPipelineJob.id == job_id).first()
+            
+            if not job:
+                raise HTTPException(status_code=404, detail="Job not found")
+            
+            # Job 삭제
+            db.delete(job)
+            db.commit()
+            
+            return {
+                "success": True,
+                "message": f"Job {job.job_id} deleted successfully"
+            }
+        finally:
+            db.close()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
