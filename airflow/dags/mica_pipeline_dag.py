@@ -43,13 +43,18 @@ def build_docker_command(**context):
     ti = context['ti']
     conf = context['dag_run'].conf
     
-    # 파라미터 추출
+    # 호스트 경로 (Docker-in-Docker를 위한 절대 경로)
+    host_data_dir = os.getenv('HOST_DATA_DIR', '/home/admin1/Documents/aimedpipeline/data')
+    
+    # 파라미터 추출 (호스트 경로 기준)
     subject_id = conf.get('subject_id', 'sub-001')
     session_id = conf.get('session_id', '')
     processes = conf.get('processes', ['proc_structural'])
-    bids_dir = conf.get('bids_dir', './data/bids')
-    output_dir = conf.get('output_dir', './data/derivatives')
-    fs_licence = conf.get('fs_licence', './data/license.txt')
+    
+    # Backend에서 전달받은 경로 (이미 호스트 절대 경로)
+    bids_dir = conf.get('bids_dir', f'{host_data_dir}/bids')
+    output_dir = conf.get('output_dir', f'{host_data_dir}/derivatives')
+    fs_licence = conf.get('fs_licence', f'{host_data_dir}/license.txt')
     threads = conf.get('threads', 4)
     freesurfer = conf.get('freesurfer', True)
     
@@ -58,7 +63,10 @@ def build_docker_command(**context):
     
     # Session 자동 감지 (session_id가 없을 때)
     if not session_id:
-        subject_path = Path(bids_dir) / subject_id
+        # BIDS 디렉토리에서 세션 찾기 (Airflow 컨테이너 내부 경로 사용)
+        # Airflow 컨테이너에는 ./data:/data로 마운트되어 있음
+        container_bids_dir = bids_dir.replace(host_data_dir, '/data')
+        subject_path = Path(container_bids_dir) / subject_id
         if subject_path.exists():
             # ses-* 디렉토리 찾기
             session_dirs = [d.name.replace("ses-", "") for d in subject_path.iterdir() 
@@ -78,29 +86,35 @@ def build_docker_command(**context):
     if processes:
         container_name += f"_{processes[0]}"
     
-    # 로그 디렉토리
+    # 로그 디렉토리 (호스트 경로)
     log_base = f"{output_dir}/logs/{processes[0] if processes else 'default'}"
     log_file = f"{log_base}/fin/{container_name}.log"
     error_log_file = f"{log_base}/error/{container_name}_error.log"
     
+    # 로그 디렉토리 (컨테이너 내부 경로 - 로그 파일 읽기용)
+    container_log_base = log_base.replace(host_data_dir, '/data')
+    container_log_file = log_file.replace(host_data_dir, '/data')
+    container_error_log_file = error_log_file.replace(host_data_dir, '/data')
+    
     # 프로세스 플래그
     process_flags = " ".join([f"-{p}" for p in processes])
     
-    # Docker 명령어 구성
+    # Docker 명령어 구성 (호스트 절대 경로로 볼륨 마운트)
     cmd_parts = [
         "docker run --rm",
         f"--name {container_name}",
-        f"-v {bids_dir}:{bids_dir}",
+        f"-v {bids_dir}:{bids_dir}",  # 호스트 절대 경로 -> 컨테이너 절대 경로
         f"-v {output_dir}:{output_dir}",
     ]
     
-    # FreeSurfer 라이센스
-    if os.path.exists(fs_licence):
+    # FreeSurfer 라이센스 (Airflow 컨테이너 내부 경로로 확인)
+    container_fs_licence = fs_licence.replace(host_data_dir, '/data')
+    if os.path.exists(container_fs_licence):
         cmd_parts.append(f"-v {fs_licence}:{fs_licence}")
     
     cmd_parts.extend([
         "micalab/micapipe:v0.2.3",
-        f"-bids {bids_dir}",
+        f"-bids {bids_dir}",  # 호스트 절대 경로 사용
         f"-out {output_dir}",
         f"-sub {sub_id}",
     ])
@@ -108,7 +122,7 @@ def build_docker_command(**context):
     if session_id:
         cmd_parts.append(f"-ses {session_id}")
     
-    if os.path.exists(fs_licence):
+    if os.path.exists(container_fs_licence):
         cmd_parts.append(f"-fs_licence {fs_licence}")
     
     cmd_parts.extend([
@@ -117,11 +131,11 @@ def build_docker_command(**context):
         f"-freesurfer {'TRUE' if freesurfer else 'FALSE'}",
     ])
     
-    # 로그 디렉토리 생성 명령
-    mkdir_cmd = f"mkdir -p {log_base}/fin {log_base}/error"
+    # 로그 디렉토리 생성 명령 (Airflow 컨테이너 내부 경로)
+    mkdir_cmd = f"mkdir -p {container_log_base}/fin {container_log_base}/error"
     
-    # Docker 명령어 (로그 리다이렉션 포함)
-    docker_cmd = f"{' '.join(cmd_parts)} > {log_file} 2> {error_log_file}"
+    # Docker 명령어 (로그 리다이렉션 포함 - Airflow 컨테이너 내부 경로)
+    docker_cmd = f"{' '.join(cmd_parts)} > {container_log_file} 2> {container_error_log_file}"
     
     # 최종 명령어: docker run 후 컨테이너가 완료될 때까지 대기
     # 1. 로그 디렉토리 생성
@@ -138,11 +152,11 @@ def build_docker_command(**context):
     print(f"Generated command:")
     print(full_cmd)
     
-    # XCom에 저장
+    # XCom에 저장 (컨테이너 내부 경로 저장 - 로그 읽기용)
     ti.xcom_push(key='docker_command', value=full_cmd)
     ti.xcom_push(key='container_name', value=container_name)
-    ti.xcom_push(key='log_file', value=log_file)
-    ti.xcom_push(key='error_log_file', value=error_log_file)
+    ti.xcom_push(key='log_file', value=container_log_file)
+    ti.xcom_push(key='error_log_file', value=container_error_log_file)
     
     return full_cmd
 

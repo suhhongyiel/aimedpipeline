@@ -71,6 +71,8 @@ services:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
       AIRFLOW__CORE__FERNET_KEY: ""
+      HOST_DATA_DIR: /home/admin1/Documents/aimedpipeline/data  # 호스트의 실제 절대 경로 (Docker-in-Docker용)
+      PROJECT_ROOT: /home/admin1/Documents/aimedpipeline  # 프로젝트 루트 경로
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - airflow_logs:/opt/airflow/logs

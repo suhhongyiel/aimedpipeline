@@ -178,26 +178,104 @@ MICA Pipeline 컨테이너가 호스트에서 실행
 git clone https://github.com/suhhongyiel/aimedpipeline.git
 cd aimedpipeline
 
-# 2. MICA Pipeline Docker 이미지 준비
+# 2. 환경 설정 (중요!)
+# docker-compose.yml 파일에서 다음 두 곳의 경로를 현재 서버의 절대 경로로 변경:
+# 
+#   backend:
+#     environment:
+#       HOST_DATA_DIR: /home/admin1/Documents/aimedpipeline/data  # ← 현재 서버의 절대 경로로 변경
+#   
+#   airflow:
+#     environment:
+#       HOST_DATA_DIR: /home/admin1/Documents/aimedpipeline/data  # ← 현재 서버의 절대 경로로 변경
+#       PROJECT_ROOT: /home/admin1/Documents/aimedpipeline        # ← 프로젝트 루트 절대 경로로 변경
+#
+# 예시:
+#   서버 A: /home/user/aimedpipeline/data
+#   서버 B: /data/projects/pipeline/data
+#   서버 C: /opt/medical_imaging/aimedpipeline/data
+
+# 현재 경로 확인:
+pwd
+# 출력 예: /home/admin1/Documents/aimedpipeline
+
+# 절대 경로 복사:
+CURRENT_DIR=$(pwd)
+echo "현재 디렉토리: $CURRENT_DIR"
+echo "docker-compose.yml에 다음 경로로 설정하세요:"
+echo "  HOST_DATA_DIR: $CURRENT_DIR/data"
+echo "  PROJECT_ROOT: $CURRENT_DIR"
+
+# 3. MICA Pipeline Docker 이미지 준비
 docker pull micalab/micapipe:v0.2.3
 
-# 3. 데이터 디렉토리 생성 및 권한 설정
+# 4. 데이터 디렉토리 생성 및 권한 설정
 mkdir -p ./data/bids ./data/derivatives
 chmod -R 777 ./data
 
-# 4. FreeSurfer 라이센스 파일 복사 (필요한 경우)
+# 5. FreeSurfer 라이센스 파일 복사 (필요한 경우)
 cp /path/to/your/license.txt ./data/license.txt
 
-# 5. Docker Compose로 모든 서비스 시작
+# 6. Docker Compose로 모든 서비스 시작
 docker compose up -d --build
 
-# 6. 서비스 상태 확인
+# 7. 서비스 상태 확인
 docker compose ps
 # 모든 서비스가 "Up" 또는 "healthy" 상태여야 함
 
-# 7. 로그 확인 (문제 발생 시)
+# 8. 로그 확인 (문제 발생 시)
 docker compose logs -f airflow
 docker compose logs -f backend
+```
+
+### ⚠️ 다른 서버에서 사용 시 주의사항
+
+이 프로젝트는 Docker-in-Docker 방식을 사용하므로, **호스트의 절대 경로**를 사용해야 합니다.
+
+#### 필수 설정 변경
+
+`docker-compose.yml` 파일에서 다음 2곳을 **반드시** 수정하세요:
+
+```yaml
+# 1. Backend 서비스
+backend:
+  environment:
+    HOST_DATA_DIR: /현재/서버의/절대/경로/aimedpipeline/data
+
+# 2. Airflow 서비스  
+airflow:
+  environment:
+    HOST_DATA_DIR: /현재/서버의/절대/경로/aimedpipeline/data
+    PROJECT_ROOT: /현재/서버의/절대/경로/aimedpipeline
+```
+
+#### 경로 확인 방법
+
+```bash
+# 프로젝트 루트에서 실행
+cd /path/to/aimedpipeline
+pwd  # 출력된 경로를 복사하여 PROJECT_ROOT에 입력
+realpath ./data  # 출력된 경로를 복사하여 HOST_DATA_DIR에 입력
+```
+
+#### 예시
+
+**서버 A (현재 서버):**
+```yaml
+HOST_DATA_DIR: /home/admin1/Documents/aimedpipeline/data
+PROJECT_ROOT: /home/admin1/Documents/aimedpipeline
+```
+
+**서버 B:**
+```yaml
+HOST_DATA_DIR: /home/researcher/projects/aimedpipeline/data
+PROJECT_ROOT: /home/researcher/projects/aimedpipeline
+```
+
+**서버 C:**
+```yaml
+HOST_DATA_DIR: /data/medical_imaging/aimedpipeline/data
+PROJECT_ROOT: /data/medical_imaging/aimedpipeline
 ```
 
 ### 서비스 접속 URL
