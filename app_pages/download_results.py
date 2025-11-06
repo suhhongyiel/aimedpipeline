@@ -5,6 +5,7 @@ import streamlit as st
 import pandas as pd
 import requests
 import os
+import time
 from datetime import datetime
 
 # FastAPI 서버 주소
@@ -49,7 +50,16 @@ def render():
     st.title("📥 Download Results & Pipeline Status")
     st.markdown("---")
     
-    # MICA Pipeline Job 데이터 가져오기
+    # 자동 새로고침 설정 (30초마다)
+    if 'last_refresh' not in st.session_state:
+        st.session_state.last_refresh = time.time()
+    
+    # 30초가 지나면 자동 새로고침
+    if time.time() - st.session_state.last_refresh > 30:
+        st.session_state.last_refresh = time.time()
+        st.rerun()
+    
+    # MICA Pipeline Job 데이터 가져오기 (캐시 방지)
     jobs_response = fetch_mica_jobs()
     
     if not jobs_response.get("success"):
@@ -78,8 +88,13 @@ def render():
     st.markdown("---")
     
     # 새로고침 버튼
-    if st.button("🔄 새로고침", key="refresh_results"):
-        st.rerun()
+    col_refresh, col_auto = st.columns([1, 3])
+    with col_refresh:
+        if st.button("🔄 새로고침", key="refresh_results"):
+            st.session_state.last_refresh = time.time()  # 타임스탬프 리셋
+            st.rerun()
+    with col_auto:
+        st.caption(f"⏱️ 자동 새로고침: {int(30 - (time.time() - st.session_state.last_refresh))}초 후")
     
     # 필터링 옵션
     st.markdown("### 🔍 Filter Jobs")
