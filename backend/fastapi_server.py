@@ -687,8 +687,8 @@ async def run_mica_pipeline(data: dict):
         if use_airflow:
             # 전체 Subject 실행 여부 확인
             if subject_id and subject_id.lower() == "all":
-                # BIDS 디렉토리에서 모든 subject 찾기
-                bids_path = Path(host_data_dir + "/bids")
+                # BIDS 디렉토리에서 모든 subject 찾기 (컨테이너 내부 경로 사용)
+                bids_path = Path("/app/data/bids")
                 if not bids_path.exists():
                     raise HTTPException(status_code=404, detail=f"BIDS directory not found: {bids_path}")
                 
