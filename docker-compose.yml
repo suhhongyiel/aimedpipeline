@@ -79,13 +79,24 @@ services:
     user: "0:0"
     command: >
       bash -c "
-        apt-get update -qq &&
-        apt-get install -y -qq docker.io curl &&
-        mkdir -p /opt/airflow/logs &&
-        chmod -R 777 /opt/airflow/logs &&
-        airflow db init &&
-        airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true &&
+        set -e
+        echo 'Installing dependencies...'
+        apt-get update -qq && apt-get install -y -qq docker.io curl
+        
+        echo 'Creating log directory...'
+        mkdir -p /opt/airflow/logs
+        chmod -R 777 /opt/airflow/logs
+        
+        echo 'Initializing Airflow database...'
+        airflow db migrate || airflow db init
+        
+        echo 'Creating admin user...'
+        airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com 2>/dev/null || echo 'User already exists'
+        
+        echo 'Starting Airflow webserver...'
         airflow webserver -p 8080 &
+        
+        echo 'Starting Airflow scheduler...'
         exec airflow scheduler"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]  # 컨테이너 내부는 8080 유지
