@@ -684,17 +684,60 @@ async def run_mica_pipeline(data: dict):
         
         # Airflow를 통한 실행
         if use_airflow:
-            return await run_mica_via_airflow(
-                subject_id=subject_id,
-                session_id=session_id,
-                processes=processes,
-                bids_dir=host_data_dir + "/bids",
-                output_dir=host_data_dir + "/derivatives",
-                fs_licence=host_data_dir + "/license.txt",
-                threads=threads,
-                freesurfer=freesurfer,
-                user=user
-            )
+            # 전체 Subject 실행 여부 확인
+            if subject_id and subject_id.lower() == "all":
+                # BIDS 디렉토리에서 모든 subject 찾기
+                bids_path = Path(host_data_dir + "/bids")
+                if not bids_path.exists():
+                    raise HTTPException(status_code=404, detail=f"BIDS directory not found: {bids_path}")
+                
+                subjects = [d.name for d in bids_path.iterdir() 
+                           if d.is_dir() and d.name.startswith("sub-") and d.name not in ["__MACOSX", "sub-all"]]
+                
+                if not subjects:
+                    raise HTTPException(status_code=400, detail="No subjects found in BIDS directory")
+                
+                # 각 subject별로 개별 DAG Run 생성
+                all_results = []
+                for sub in subjects:
+                    result = await run_mica_via_airflow(
+                        subject_id=sub,
+                        session_id=session_id,  # 모든 subject에 대해 동일한 session (또는 자동 감지)
+                        processes=processes,
+                        bids_dir=host_data_dir + "/bids",
+                        output_dir=host_data_dir + "/derivatives",
+                        fs_licence=host_data_dir + "/license.txt",
+                        threads=threads,
+                        freesurfer=freesurfer,
+                        user=user
+                    )
+                    all_results.append(result)
+                
+                return {
+                    "success": True,
+                    "mode": "airflow",
+                    "message": f"✅ {len(subjects)}개 Subject의 MICA Pipeline이 Airflow를 통해 시작되었습니다.\n\n"
+                              f"User: {user}\n"
+                              f"Subjects: {', '.join([s.replace('sub-', '') for s in subjects])}\n\n"
+                              f"💡 Airflow UI에서 실행 상태를 확인하세요: http://localhost:8081",
+                    "total_subjects": len(subjects),
+                    "subjects": subjects,
+                    "dag_runs": all_results,
+                    "timestamp": datetime.now().isoformat()
+                }
+            else:
+                # 단일 subject 실행
+                return await run_mica_via_airflow(
+                    subject_id=subject_id,
+                    session_id=session_id,
+                    processes=processes,
+                    bids_dir=host_data_dir + "/bids",
+                    output_dir=host_data_dir + "/derivatives",
+                    fs_licence=host_data_dir + "/license.txt",
+                    threads=threads,
+                    freesurfer=freesurfer,
+                    user=user
+                )
         
         # 컨테이너 내부 경로를 호스트 경로로 변환
         def convert_to_host_path(container_path: str) -> str:
@@ -1204,8 +1247,33 @@ async def get_mica_jobs(status: str = None):
                                     job.progress = 100.0
                                     
                                     if airflow_state == "failed":
-                                        # Airflow 로그에서 에러 메시지 추출 (간단히 처리)
-                                        job.error_message = "Airflow DAG execution failed. Check Airflow UI for details."
+                                        # 로그 파일에서 에러 메시지 추출
+                                        error_details = []
+                                        
+                                        # 1. 에러 로그 파일 확인
+                                        if job.error_log_file:
+                                            error_log_path = Path(job.error_log_file)
+                                            if error_log_path.exists() and error_log_path.stat().st_size > 100:
+                                                with open(error_log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                                    error_content = f.read()
+                                                    error_lines = [line.strip() for line in error_content.split('\n')
+                                                                  if line.strip() and 'ERROR' in line]
+                                                    if error_lines:
+                                                        error_details.extend(error_lines[-3:])
+                                        
+                                        # 2. 표준 로그에서 에러 확인
+                                        if not error_details and job.log_file:
+                                            log_path = Path(job.log_file)
+                                            if log_path.exists():
+                                                with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                                    log_content = f.read()
+                                                    if "[ ERROR ]" in log_content:
+                                                        error_lines = [line.strip() for line in log_content.split('\n')
+                                                                      if 'ERROR' in line and line.strip()]
+                                                        if error_lines:
+                                                            error_details.extend(error_lines[-3:])
+                                        
+                                        job.error_message = '\n'.join(error_details) if error_details else "Pipeline failed. Check Airflow logs."
                                     
                                     db.commit()
                         except Exception as e:

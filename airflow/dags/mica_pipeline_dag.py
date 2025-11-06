@@ -141,26 +141,57 @@ def log_completion(**context):
     ti = context['ti']
     container_name = ti.xcom_pull(key='container_name', task_ids='build_command')
     log_file = ti.xcom_pull(key='log_file', task_ids='build_command')
+    error_log_file = ti.xcom_pull(key='error_log_file', task_ids='build_command')
     
     print(f"=" * 80)
     print(f"MICA Pipeline 완료")
     print(f"Container: {container_name}")
     
-    # 로그 파일에서 에러 확인 (MICA Pipeline은 exit 0으로 종료해도 에러 발생 가능)
+    errors_found = False
+    error_details = []
+    
+    # 1. 표준 로그 파일에서 에러 확인 (MICA Pipeline은 exit 0으로 종료해도 에러 발생 가능)
     log_path = Path(log_file)
     if log_path.exists():
         with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
             log_content = f.read()
-            if "[ ERROR ]" in log_content:
-                error_lines = [line for line in log_content.split('\n') if 'ERROR' in line]
-                print(f"\n{'!' * 80}")
-                print(f"WARNING: Errors found in log file!")
-                print(f"{'!' * 80}")
-                for line in error_lines[-5:]:  # 마지막 5개 에러 라인
-                    print(line)
-                print(f"{'!' * 80}\n")
-                raise Exception("MICA Pipeline completed with errors. Check log file for details.")
+            if "[ ERROR ]" in log_content or "ERROR" in log_content:
+                errors_found = True
+                error_lines = [line.strip() for line in log_content.split('\n') 
+                             if 'ERROR' in line and line.strip()]
+                error_details.extend(error_lines[-5:])  # 마지막 5개 에러 라인
     
+    # 2. 에러 로그 파일 확인 (stderr 출력)
+    error_log_path = Path(error_log_file)
+    if error_log_path.exists() and error_log_path.stat().st_size > 100:  # 100바이트 이상이면 실제 에러
+        errors_found = True
+        with open(error_log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            error_content = f.read()
+            # 의미있는 에러 라인만 추출 (빈 줄, 경고 제외)
+            error_lines = [line.strip() for line in error_content.split('\n')
+                          if line.strip() and not line.strip().startswith('WARNING')]
+            if error_lines:
+                error_details.extend(error_lines[-5:])  # 마지막 5개 에러 라인
+    
+    # 3. 에러가 발견되면 실패 처리
+    if errors_found and error_details:
+        print(f"\n{'!' * 80}")
+        print(f"⚠️  ERRORS DETECTED IN MICA PIPELINE")
+        print(f"{'!' * 80}")
+        print(f"Container: {container_name}")
+        print(f"Log file: {log_file}")
+        print(f"Error log: {error_log_file}")
+        print(f"\n최근 에러 메시지:")
+        for i, line in enumerate(error_details[:10], 1):  # 최대 10개
+            print(f"  {i}. {line}")
+        print(f"{'!' * 80}\n")
+        
+        # XCom에 에러 정보 저장 (웹 UI에서 표시용)
+        ti.xcom_push(key='error_summary', value='\n'.join(error_details[:5]))
+        
+        raise Exception(f"MICA Pipeline failed with errors. Check logs: {log_file}")
+    
+    print(f"✅ Pipeline completed successfully without errors")
     print(f"=" * 80)
 
 default_args = {
