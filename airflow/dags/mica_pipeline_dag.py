@@ -140,11 +140,13 @@ def build_docker_command(**context):
     # 최종 명령어: docker run 후 컨테이너가 완료될 때까지 대기
     # 1. 로그 디렉토리 생성
     # 2. Docker 실행 (백그라운드)
-    # 3. docker wait로 컨테이너 종료 대기
-    # 4. exit code 확인하여 에러면 실패 처리
+    # 3. 컨테이너 시작 대기
+    # 4. docker wait로 컨테이너 종료 대기
+    # 5. exit code 확인하여 에러면 실패 처리
     full_cmd = f"""
     {mkdir_cmd} && \\
     ({docker_cmd} &) && \\
+    sleep 2 && \\
     docker wait {container_name} || \\
     (echo "Container {container_name} failed" && exit 1)
     """.strip()
