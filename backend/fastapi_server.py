@@ -3,6 +3,8 @@ import uuid
 import requests
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+import tempfile
 import subprocess
 from pathlib import Path
 from datetime import datetime
@@ -1333,3 +1335,48 @@ async def update_mica_job_status(data: dict):
             db.close()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# --- 유틸: 데이터 루트 결정 (/app/data 기본) ---
+def pick_existing_data_root() -> Path:
+    root = Path(os.getenv("HOST_DATA_DIR", "/app/data"))
+    if not (root / "derivatives").exists():
+        raise HTTPException(status_code=404, detail=f"Derivatives not found: {root / 'derivatives'}")
+    return root
+
+# --- 보안용: derivatives 바깥 접근 방지 ---
+def _ensure_inside(root: Path, target: Path) -> Path:
+    root_r = root.resolve()
+    target_r = target.resolve()
+    if not str(target_r).startswith(str(root_r)):
+        raise HTTPException(status_code=403, detail="Path traversal detected")
+    return target_r
+
+# --- 전체 derivatives를 ZIP으로 반환 ---
+@app.get("/download-derivatives")
+def download_derivatives():
+    data_root = pick_existing_data_root()
+    derivatives_root = (data_root / "derivatives").resolve()
+
+    if not derivatives_root.exists():
+        raise HTTPException(status_code=404, detail=f"Target not found: {derivatives_root}")
+
+    # ZIP 파일 경로 준비
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_name = f"derivatives_all_{ts}.zip"
+    tmp_dir = Path("/app/tmp")
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = tmp_dir / zip_name
+
+    # ZIP 생성
+    import zipfile
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for p in derivatives_root.rglob("*"):
+            if p.is_file():
+                arcname = p.relative_to(derivatives_root)
+                zf.write(p, arcname=str(arcname))
+
+    return FileResponse(
+        path=str(zip_path),
+        filename=zip_name,
+        media_type="application/zip",
+    )

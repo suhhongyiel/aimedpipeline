@@ -252,6 +252,25 @@ def render():
         
         # 결과 파일 다운로드 (derivatives 디렉토리 기반)
         st.markdown("#### 📦 Download Results")
+        st.markdown("#### ⬇️ Export (ALL)")
+
+        if st.button("📦 Download ALL derivatives as ZIP", key="dl_all_deriv"):
+            try:
+                r = requests.get(f"{FASTAPI_SERVER_URL}/download-derivatives", timeout=60)
+                if r.status_code == 200:
+                    zip_bytes = r.content
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    st.download_button(
+                        label="⬇️ Save file",
+                        data=zip_bytes,
+                        file_name=f"derivatives_all_{ts}.zip",
+                        mime="application/zip"
+                    )
+                else:
+                    st.error(f"Download failed: {r.status_code} {r.text}")
+            except Exception as e:
+                st.error(f"Download error: {str(e)}")
+
         st.info("💡 Results are saved in `/app/data/derivatives/` directory. Access the files directly on the server or use the file browser below.")
         
     else:

@@ -47,9 +47,9 @@ def build_docker_command(**context):
     subject_id = conf.get('subject_id', 'sub-001')
     session_id = conf.get('session_id', '')
     processes = conf.get('processes', ['proc_structural'])
-    bids_dir = conf.get('bids_dir', '/private/hysuh/07-pipeline/data/bids')
-    output_dir = conf.get('output_dir', '/private/hysuh/07-pipeline/data/derivatives')
-    fs_licence = conf.get('fs_licence', '/private/hysuh/07-pipeline/data/license.txt')
+    bids_dir = conf.get('bids_dir', '/private/sjhwang/aimedpipeline/data/bids')
+    output_dir = conf.get('output_dir', '/private/sjhwang/aimedpipeline/data/derivatives')
+    fs_licence = conf.get('fs_licence', '/private/sjhwang/aimedpipeline/data/license.txt')
     threads = conf.get('threads', 4)
     freesurfer = conf.get('freesurfer', True)
     
