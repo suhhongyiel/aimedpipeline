@@ -8,6 +8,11 @@ import os
 import pandas as pd
 from utils.styles import get_custom_css
 
+# === 고정 경로(도커 내부 표준) ===
+BIDS_DIR = "/app/data/bids"
+OUT_DIR  = "/app/data/derivatives"
+FS_LIC   = "/app/data/license.txt"
+FSL_TOPUP_CNF = "/usr/local/fsl/etc/flirtsch/b02b0_1.cnf" #후에 수정 예정(아직 파일 없음)
 # FastAPI 서버 URL 설정
 FASTAPI_SERVER_URL = os.getenv(
     "FASTAPI_SERVER_URL",
@@ -263,6 +268,7 @@ def render():
                 st.error(f"❌ 오류: {str(e)}")
     
     # === 탭 3: 프로세스 선택 ===
+
     with tab3:
         st.markdown("### ⚙️ MICA Pipeline 프로세스 선택")
         
@@ -271,18 +277,253 @@ def render():
         
         st.markdown("실행할 프로세스를 선택하세요:")
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
+        #col1, col2 = st.columns(2)
+        col_sc = st.columns(1)[0]
+        col_sp = st.columns(1)[0]
+        col_fmri = st.columns(1)[0]
+
+        with col_sp:
             st.markdown("#### Structural Processing")
             proc_struct = st.checkbox("proc_structural", value=True, help="T1w 구조 영상 처리")
             proc_surf = st.checkbox("proc_surf", value=True, help="Surface 재구성")
             post_structural = st.checkbox("post_structural", value=False, help="구조 영상 후처리")
             
-        with col2:
+        with col_fmri:
             st.markdown("#### Functional Processing")
+            # --- proc_func 옵션 UI + 플래그 빌더 ----------------------------------------
+            def build_proc_func_flags(a: dict) -> list[str]:
+                """micapipe -proc_func 인자 dict -> CLI 플래그 리스트"""
+                flags = []
+                # 문자열/경로
+                if a["mainScanStr"]:        flags += ["-mainScanStr", a["mainScanStr"]]
+                if a["func_pe"]:            flags += ["-func_pe", a["func_pe"]]
+                if a["func_rpe"]:           flags += ["-func_rpe", a["func_rpe"]]
+                if a["mainScanRun"]:        flags += ["-mainScanRun", a["mainScanRun"]]
+                if a["phaseReversalRun"]:   flags += ["-phaseReversalRun", a["phaseReversalRun"]]
+                if a["topupConfig"]:        flags += ["-topupConfig", a["topupConfig"]]
+                if a["icafixTraining"]:     flags += ["-icafixTraining", a["icafixTraining"]]
+                if a["sesAnat"]:            flags += ["-sesAnat", a["sesAnat"]]
+                # 불리언(존재만으로 켜짐)
+                if a["NSR"]:   flags += ["-NSR"]
+                if a["GSR"]:   flags += ["-GSR"]
+                if a["noFIX"]: flags += ["-noFIX"]
+                if a["dropTR"]: flags += ["-dropTR"]
+                if a["noFC"]:  flags += ["-noFC"]
+                return flags
+            ############### proc_func ###############
             proc_func = st.checkbox("proc_func", value=False, help="기능적 MRI 처리")
+            proc_func_args = {}
+            if proc_func:
+                with st.expander("🧠 proc_func 옵션", expanded=False):
+                    st.caption("micapipe -proc_func 의 세부 인자들을 설정합니다. 비워두면 기본값을 사용합니다.")
+
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        proc_func_args["mainScanStr"] = st.text_input(
+                            "mainScanStr",
+                            value="task-rest_acq-AP_bold",  # default
+                            help="주요 BOLD 스캔 이름(콤마로 멀티에코 지정 가능: echo1,echo2,echo3)"
+                        )
+                        proc_func_args["func_pe"] = st.text_input(
+                            "func_pe ",
+                            value="task-rest_acq-APse_bold",
+                            help="주 위상 인코딩 파일 경로 또는 BIDS 파일명"
+                        )
+                        proc_func_args["func_rpe"] = st.text_input(
+                            "func_rpe",
+                            value="task-rest_acq-PAse_bold",
+                            help="역 위상 인코딩 파일 경로(없으면 TOPUP 생략)"
+                        )
+                        proc_func_args["mainScanRun"] = st.text_input(
+                            "mainScanRun",
+                            value="",
+                            placeholder="예: 1",
+                            help="rest가 여러 개면 처리할 run 번호"
+                        )
+                        proc_func_args["phaseReversalRun"] = st.text_input(
+                            "phaseReversalRun",
+                            value="",
+                            placeholder="예: 1",
+                            help="PE 파일이 여러 개면 처리할 run 번호"
+                        )
+                        proc_func_args["topupConfig"] = st.text_input(
+                            "topupConfig (경로)",
+                            value="",  # 비우면 기본 cnf 사용
+                            placeholder="예: /path/to/file.cnf",
+                            help="FSL topup 설정 파일 경로"
+                        )
+                    with c2:
+                        st.markdown("**Nuisance/후처리 플래그**")
+                        proc_func_args["NSR"]   = st.checkbox("NSR (WM/CSF 회귀)", value=False,
+                                                            help="기본값: False")
+                        proc_func_args["GSR"]   = st.checkbox("GSR (Global+WM/CSF 회귀)", value=False,
+                                                            help="기본값: False")
+                        proc_func_args["noFIX"] = st.checkbox("noFIX (ICA-FIX 생략)", value=False,
+                                                            help="기본값: False → 기본은 FIX 수행")
+                        proc_func_args["icafixTraining"] = st.text_input(
+                            "icafixTraining (경로)",
+                            value="",  # 비우면: $MICAPIPE/functions/MICAMTL_training_15HC_15PX.RData
+                            placeholder="예: /path/to/training.RData",
+                            help="ICA-FIX 트레이닝 파일 경로(비우면 micapipe 기본)"
+                        )
+                        proc_func_args["sesAnat"] = st.text_input(
+                            "sesAnat (세션 ID)",
+                            value="",
+                            placeholder="예: M000",
+                            help="종단 자료에서 anat 기준 세션 ID"
+                        )
+                        proc_func_args["dropTR"] = st.checkbox("dropTR (처음 5 TR 제거)", value=False,
+                                                            help="기본값: False")
+                        proc_func_args["noFC"]   = st.checkbox("noFC (기능적 connectome 생략)", value=False,
+                                                            help="기본값: False")
+
+ 
+
+                # 백엔드에 넘길 수 있도록 세이브(예: 세션 상태/페이로드)
+                st.session_state["proc_func_args"] = proc_func_args
+                # micapipe 실제 플래그로 변환
+                proc_func_flags = build_proc_func_flags(proc_func_args)
+            else:
+                proc_func_flags = []
+            ############ DWI ############   
             proc_dwi = st.checkbox("proc_dwi", value=False, help="확산 가중 영상 처리")
+             # --- DWI 세부 옵션 ---
+            dwi_flags = []
+            if proc_dwi:
+                with st.expander("🧠 DWI 옵션 (micapipe -proc_dwi)", expanded=True):
+                    st.caption("micapipe -proc_dwi 인자들을 선택하세요. 빈 칸은 기본값을 사용합니다.")
+
+                    # 경로/문자열
+                    dwi_main = st.text_input(
+                        "dwi_main (path)",
+                        value="",
+                        placeholder="<BIDS>/<sub>/dwi/*_dir-AP_dwi.nii*",
+                        help="메인 DWI 파일 경로. 비워두면 기본 패턴으로 자동 탐색"
+                    )
+                    use_rpe = st.checkbox(
+                        "역상(phase-reversed) DWI 제공함 (dwi_rpe 사용)",
+                        value=True,
+                        help="끄면 dwi_rpe를 FALSE로 전달하여 TOPUP을 건너뜀"
+                    )
+                    dwi_rpe = st.text_input(
+                        "dwi_rpe (path)",
+                        value="",
+                        placeholder="<BIDS>/<sub>/dwi/*_dir-PA_dwi.nii*",
+                        help="역상 DWI(b0) 경로. 위 체크를 끄면 FALSE로 전송"
+                    )
+                    dwi_processed = st.text_input(
+                        "dwi_processed (mif)",
+                        value="",
+                        placeholder="이미 전처리된 .mif (bvec/bval/PE/ReadoutTime 포함)",
+                        help="제공 시 denoise/topup/eddy 등 전처리 스킵"
+                    )
+                    dwi_acq = st.text_input(
+                        "dwi_acq (str)",
+                        value="",
+                        placeholder="예: mb3  (결과가 dwi/acq-<값>에 저장됨)",
+                    )
+
+                    # 숫자
+                    b0thr = st.number_input(
+                        "b0thr",
+                        min_value=0, max_value=500, value=61,
+                        help="b=0 이미지를 판단할 임계값 (기본 61)"
+
+                    )
+
+                    # 토글 플래그
+                    rpe_all = st.checkbox("rpe_all", value=False, help="AP/PA 모든 볼륨이 쌍으로 있을 때 사용")
+                    regAffine = st.checkbox("regAffine", value=False, help="DWI→T1w 정합을 Affine만 수행(기본: SyN 비선형)")
+                    no_bvalue_scaling = st.checkbox("no_bvalue_scaling", value=False, help="b-value scaling 비활성화")
+                    regSynth = st.checkbox("regSynth", value=False, help="synth 기반 정합 사용")
+                    dwi_upsample = st.checkbox("dwi_upsample", value=False, help="1.25mm 등방성 업샘플")
+
+                    # --- micapipe 플래그로 변환 ---
+                    if dwi_main.strip():
+                        dwi_flags += ["-dwi_main", dwi_main.strip()]
+
+                    if use_rpe:
+                        if dwi_rpe.strip():
+                            dwi_flags += ["-dwi_rpe", dwi_rpe.strip()]
+                    else:
+                        dwi_flags += ["-dwi_rpe", "FALSE"]
+
+                    if dwi_processed.strip():
+                        dwi_flags += ["-dwi_processed", dwi_processed.strip()]
+
+                    if dwi_acq.strip():
+                        dwi_flags += ["-dwi_acq", dwi_acq.strip()]
+
+                    dwi_flags += ["-b0thr", str(b0thr)]
+
+                    if rpe_all:           dwi_flags.append("-rpe_all")
+                    if regAffine:         dwi_flags.append("-regAffine")
+                    if no_bvalue_scaling: dwi_flags.append("-no_bvalue_scaling")
+                    if regSynth:          dwi_flags.append("-regSynth")
+                    if dwi_upsample:      dwi_flags.append("-dwi_upsample")
+                    
+        # Surface Construction section in a new column
+        col_sc = st.columns(1)[0]
+        with col_sc:
+            # --- Structural Connectivity (SC) -------------------------------
+            st.markdown("#### Structural Connectivity")
+            proc_sc = st.checkbox("SC", value=False, help="트랙토그래피로 SC 생성")
+
+            sc_flags = []
+            if proc_sc:
+                with st.expander("🧩 SC 옵션 (micapipe -SC)", expanded=False):
+                    st.caption("micapipe -SC 인자들을 설정합니다. 빈 칸은 기본값(문서의 DEFAULT)을 사용합니다.")
+
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        tracts = st.text_input(
+                            "tracts (개수, 'M' 사용 가능)",
+                            value="40M",
+                            help="생성할 streamline 개수. 예: 40M (기본값)"
+                        )
+                        keep_tck = st.checkbox(
+                            "keep_tck (최종 트랙토그램 복사 저장)", value=False,
+                            help="선택 시 <out>/micapipe/<sub>/dwi 에 .tck 저장"
+                        )
+                        autoTract = st.checkbox(
+                            "autoTract (자동 번들 분할)", value=False,
+                            help="Automatic tractogram segmentation 수행"
+                        )
+                        dwi_acq_sc = st.text_input(
+                            "dwi_acq (str)",
+                            value="",
+                            placeholder="예: mb3",
+                            help="기본 DWI와 다른 acquisition으로 SC 만들 때 지정"
+                        )
+                    with c2:
+                        tract_filter = st.selectbox(
+                            "filter (트랙토그램 필터링 알고리즘)",
+                            options=["SIFT2", "COMMIT2", "both"],
+                            index=0,
+                            help="기본: SIFT2"
+                        )
+                        weighted_SC = st.text_input(
+                            "weighted_SC (경로)",
+                            value="",
+                            placeholder="/app/data/.../FA.nii.gz",
+                            help="FA/ADC/qT1 등 DWI 공간의 정량맵으로 가중치 부여"
+                        )
+                        tck_path = st.text_input(
+                            "tck (경로)",
+                            value="",
+                            placeholder="/app/data/.../tracks.tck",
+                            help="미리 계산한 whole-brain .tck을 사용(전 단계 스킵)"
+                        )
+
+                    # micapipe 플래그로 변환
+                    if tracts.strip():                 sc_flags += ["-tracts", tracts.strip()]
+                    if keep_tck:                       sc_flags.append("-keep_tck")
+                    if autoTract:                      sc_flags.append("-autoTract")
+                    if tract_filter:                   sc_flags += ["-filter", tract_filter]
+                    if dwi_acq_sc.strip():             sc_flags += ["-dwi_acq", dwi_acq_sc.strip()]
+                    if weighted_SC.strip():            sc_flags += ["-weighted_SC", weighted_SC.strip()]
+                    if tck_path.strip():               sc_flags += ["-tck", tck_path.strip()]
+
             
         st.markdown("#### Subject 선택")
         
@@ -342,8 +583,13 @@ def render():
             selected_processes.append("post_structural")
         if proc_func:
             selected_processes.append("proc_func")
+        
         if proc_dwi:
-            selected_processes.append("proc_dwi")
+            selected_processes.append("proc_dwi")   
+        
+
+        if proc_sc:
+            selected_processes.append("SC")   
         
         # === 추가 설정 ===
         st.markdown("---")
@@ -397,7 +643,7 @@ def render():
         )
         
         if use_airflow:
-            st.info("💡 Airflow UI에서 실행 상태를 확인하세요: http://localhost:8081 (admin/admin)")
+            st.info("💡 Airflow UI에서 실행 상태를 확인하세요: http://localhost:8080 (admin/admin)")
             
             # 사용자 이름 입력
             user_name = st.text_input(
@@ -418,6 +664,9 @@ def render():
         st.session_state.mica_fs_licence = fs_licence
         st.session_state.mica_threads = threads
         st.session_state.mica_freesurfer = use_freesurfer
+        st.session_state.mica_proc_func_flags = proc_func_flags
+        st.session_state.mica_dwi_flags = dwi_flags
+        st.session_state.mica_sc_flags = sc_flags
         
         if selected_processes:
             st.info(f"✅ 선택된 프로세스: {', '.join(selected_processes)}")
@@ -478,7 +727,10 @@ def render():
                             "freesurfer": st.session_state.get("mica_freesurfer", True),
                             "use_airflow": st.session_state.get("mica_use_airflow", False),
                             "user": st.session_state.get("mica_user", "anonymous"),
-                            "timeout": 3600
+                            "timeout": 3600,
+                            "proc_func_flags": st.session_state.get("mica_proc_func_flags", []),
+                            "dwi_flags": st.session_state.get("mica_dwi_flags", []),
+                            "sc_flags": st.session_state.get("mica_sc_flags", [])
                         }
                         
                         resp = requests.post(
@@ -534,7 +786,7 @@ def render():
                                 
                                 - **DAG Run ID:** `{result.get('dag_run_id', '-')}`
                                 - **User:** `{result.get('user', '-')}`
-                                - **Airflow UI:** [실행 상태 확인하기]({result.get('airflow_url', 'http://localhost:8081')})
+                                - **Airflow UI:** [실행 상태 확인하기]({result.get('airflow_url', 'http://localhost:8080')})
                                 
                                 💡 Airflow UI에서 실시간 로그와 진행 상황을 확인할 수 있습니다.
                                 """)

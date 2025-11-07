@@ -42,19 +42,19 @@ def build_docker_command(**context):
     
     ti = context['ti']
     conf = context['dag_run'].conf
-    
+    proc_func_flags = conf.get('proc_func_flags', [])
+    dwi_flags = conf.get('dwi_flags', [])
+    sc_flags = conf.get('sc_flags', [])
+
     # 호스트 경로 (Docker-in-Docker를 위한 절대 경로)
     host_data_dir = os.getenv('HOST_DATA_DIR', '/home/admin1/Documents/aimedpipeline/data')
-    
-    # 파라미터 추출 (호스트 경로 기준)
+    # 파라미터 추출
     subject_id = conf.get('subject_id', 'sub-001')
     session_id = conf.get('session_id', '')
     processes = conf.get('processes', ['proc_structural'])
-    
-    # Backend에서 전달받은 경로 (이미 호스트 절대 경로)
-    bids_dir = conf.get('bids_dir', f'{host_data_dir}/bids')
-    output_dir = conf.get('output_dir', f'{host_data_dir}/derivatives')
-    fs_licence = conf.get('fs_licence', f'{host_data_dir}/license.txt')
+    bids_dir = conf.get('bids_dir', '/data/bids')
+    output_dir = conf.get('output_dir', '/data/derivatives')
+    fs_licence = conf.get('fs_licence', '/data/license.txt')
     threads = conf.get('threads', 4)
     freesurfer = conf.get('freesurfer', True)
     
@@ -63,10 +63,7 @@ def build_docker_command(**context):
     
     # Session 자동 감지 (session_id가 없을 때)
     if not session_id:
-        # BIDS 디렉토리에서 세션 찾기 (Airflow 컨테이너 내부 경로 사용)
-        # Airflow 컨테이너에는 ./data:/data로 마운트되어 있음
-        container_bids_dir = bids_dir.replace(host_data_dir, '/data')
-        subject_path = Path(container_bids_dir) / subject_id
+        subject_path = Path(bids_dir) / subject_id
         if subject_path.exists():
             # ses-* 디렉토리 찾기
             session_dirs = [d.name.replace("ses-", "") for d in subject_path.iterdir() 
@@ -86,35 +83,45 @@ def build_docker_command(**context):
     if processes:
         container_name += f"_{processes[0]}"
     
-    # 로그 디렉토리 (호스트 경로)
+    # 로그 디렉토리
     log_base = f"{output_dir}/logs/{processes[0] if processes else 'default'}"
     log_file = f"{log_base}/fin/{container_name}.log"
     error_log_file = f"{log_base}/error/{container_name}_error.log"
-    
+
     # 로그 디렉토리 (컨테이너 내부 경로 - 로그 파일 읽기용)
     container_log_base = log_base.replace(host_data_dir, '/data')
     container_log_file = log_file.replace(host_data_dir, '/data')
     container_error_log_file = error_log_file.replace(host_data_dir, '/data')
-    
+
     # 프로세스 플래그
-    process_flags = " ".join([f"-{p}" for p in processes])
+    # 기본 프로세스 스위치들(-proc_func, -proc_dwi, -SC 등)
+    process_switches = [f"-{p}" for p in processes]
+
+    # 세부 플래그(이미 ["-옵션", "값", ...] 형태라고 가정)
+    extra_flags = []
+    extra_flags += proc_func_flags
+    extra_flags += dwi_flags
+    extra_flags += sc_flags
+
+    process_flags = " ".join(process_switches + extra_flags)
+
+
     
-    # Docker 명령어 구성 (호스트 절대 경로로 볼륨 마운트)
+    # Docker 명령어 구성
     cmd_parts = [
         "docker run --rm",
         f"--name {container_name}",
-        f"-v {bids_dir}:{bids_dir}",  # 호스트 절대 경로 -> 컨테이너 절대 경로
+        f"-v {bids_dir}:{bids_dir}",
         f"-v {output_dir}:{output_dir}",
     ]
     
-    # FreeSurfer 라이센스 (Airflow 컨테이너 내부 경로로 확인)
-    container_fs_licence = fs_licence.replace(host_data_dir, '/data')
-    if os.path.exists(container_fs_licence):
+    # FreeSurfer 라이센스
+    if os.path.exists(fs_licence):
         cmd_parts.append(f"-v {fs_licence}:{fs_licence}")
     
     cmd_parts.extend([
         "micalab/micapipe:v0.2.3",
-        f"-bids {bids_dir}",  # 호스트 절대 경로 사용
+        f"-bids {bids_dir}",
         f"-out {output_dir}",
         f"-sub {sub_id}",
     ])
@@ -122,7 +129,7 @@ def build_docker_command(**context):
     if session_id:
         cmd_parts.append(f"-ses {session_id}")
     
-    if os.path.exists(container_fs_licence):
+    if os.path.exists(fs_licence):
         cmd_parts.append(f"-fs_licence {fs_licence}")
     
     cmd_parts.extend([
@@ -133,7 +140,6 @@ def build_docker_command(**context):
     
     # 로그 디렉토리 생성 명령 (Airflow 컨테이너 내부 경로)
     mkdir_cmd = f"mkdir -p {container_log_base}/fin {container_log_base}/error"
-    
     # Docker 명령어 (로그 리다이렉션 포함 - Airflow 컨테이너 내부 경로)
     docker_cmd = f"{' '.join(cmd_parts)} > {container_log_file} 2> {container_error_log_file}"
     
@@ -147,19 +153,21 @@ def build_docker_command(**context):
     {mkdir_cmd} && \\
     ({docker_cmd} &) && \\
     sleep 2 && \\
+    
     docker wait {container_name} || \\
     (echo "Container {container_name} failed" && exit 1)
     """.strip()
     
+    
     print(f"Generated command:")
     print(full_cmd)
     
-    # XCom에 저장 (컨테이너 내부 경로 저장 - 로그 읽기용)
+    # XCom에 저장
     ti.xcom_push(key='docker_command', value=full_cmd)
     ti.xcom_push(key='container_name', value=container_name)
     ti.xcom_push(key='log_file', value=container_log_file)
     ti.xcom_push(key='error_log_file', value=container_error_log_file)
-    
+
     return full_cmd
 
 def log_completion(**context):
@@ -169,57 +177,26 @@ def log_completion(**context):
     ti = context['ti']
     container_name = ti.xcom_pull(key='container_name', task_ids='build_command')
     log_file = ti.xcom_pull(key='log_file', task_ids='build_command')
-    error_log_file = ti.xcom_pull(key='error_log_file', task_ids='build_command')
     
     print(f"=" * 80)
     print(f"MICA Pipeline 완료")
     print(f"Container: {container_name}")
     
-    errors_found = False
-    error_details = []
-    
-    # 1. 표준 로그 파일에서 에러 확인 (MICA Pipeline은 exit 0으로 종료해도 에러 발생 가능)
+    # 로그 파일에서 에러 확인 (MICA Pipeline은 exit 0으로 종료해도 에러 발생 가능)
     log_path = Path(log_file)
     if log_path.exists():
         with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
             log_content = f.read()
-            if "[ ERROR ]" in log_content or "ERROR" in log_content:
-                errors_found = True
-                error_lines = [line.strip() for line in log_content.split('\n') 
-                             if 'ERROR' in line and line.strip()]
-                error_details.extend(error_lines[-5:])  # 마지막 5개 에러 라인
+            if "[ ERROR ]" in log_content:
+                error_lines = [line for line in log_content.split('\n') if 'ERROR' in line]
+                print(f"\n{'!' * 80}")
+                print(f"WARNING: Errors found in log file!")
+                print(f"{'!' * 80}")
+                for line in error_lines[-5:]:  # 마지막 5개 에러 라인
+                    print(line)
+                print(f"{'!' * 80}\n")
+                raise Exception("MICA Pipeline completed with errors. Check log file for details.")
     
-    # 2. 에러 로그 파일 확인 (stderr 출력)
-    error_log_path = Path(error_log_file)
-    if error_log_path.exists() and error_log_path.stat().st_size > 100:  # 100바이트 이상이면 실제 에러
-        errors_found = True
-        with open(error_log_path, 'r', encoding='utf-8', errors='ignore') as f:
-            error_content = f.read()
-            # 의미있는 에러 라인만 추출 (빈 줄, 경고 제외)
-            error_lines = [line.strip() for line in error_content.split('\n')
-                          if line.strip() and not line.strip().startswith('WARNING')]
-            if error_lines:
-                error_details.extend(error_lines[-5:])  # 마지막 5개 에러 라인
-    
-    # 3. 에러가 발견되면 실패 처리
-    if errors_found and error_details:
-        print(f"\n{'!' * 80}")
-        print(f"⚠️  ERRORS DETECTED IN MICA PIPELINE")
-        print(f"{'!' * 80}")
-        print(f"Container: {container_name}")
-        print(f"Log file: {log_file}")
-        print(f"Error log: {error_log_file}")
-        print(f"\n최근 에러 메시지:")
-        for i, line in enumerate(error_details[:10], 1):  # 최대 10개
-            print(f"  {i}. {line}")
-        print(f"{'!' * 80}\n")
-        
-        # XCom에 에러 정보 저장 (웹 UI에서 표시용)
-        ti.xcom_push(key='error_summary', value='\n'.join(error_details[:5]))
-        
-        raise Exception(f"MICA Pipeline failed with errors. Check logs: {log_file}")
-    
-    print(f"✅ Pipeline completed successfully without errors")
     print(f"=" * 80)
 
 default_args = {
@@ -242,7 +219,6 @@ with DAG(
     max_active_runs=5,  # 최대 5개의 DAG 동시 실행
     concurrency=10,  # 최대 10개의 task 동시 실행
     description="MICA Pipeline - Multi-user neuroimaging processing pipeline",
-    is_paused_upon_creation=False,  # DAG 생성 시 자동으로 활성화
 ) as dag:
 
     # Task 1: 시작 로그

@@ -13,7 +13,8 @@ import json
 from typing import List
 import zipfile
 import tarfile
-
+# tokenize for shell command 안전 처리
+import shlex
 # db 관련
 # --- DB 관련 import 수정 ---
 from database import SessionLocal
@@ -572,7 +573,10 @@ async def run_mica_via_airflow(
     fs_licence: str,
     threads: int,
     freesurfer: bool,
-    user: str
+    user: str,
+    proc_func_flags: list | None = None,
+    dwi_flags: list | None = None,
+    sc_flags: list | None = None,
 ):
     """Airflow DAG를 트리거하여 MICA Pipeline을 실행합니다."""
     try:
@@ -591,7 +595,10 @@ async def run_mica_via_airflow(
                 "fs_licence": fs_licence,
                 "threads": threads,
                 "freesurfer": freesurfer,
-                "user": user
+                "user": user,
+                "proc_func_flags": proc_func_flags or [],
+                "dwi_flags": dwi_flags or [],
+                "sc_flags": sc_flags or [],
             }
         }
         
@@ -625,8 +632,7 @@ async def run_mica_via_airflow(
                     status="processing",
                     progress=0.0,
                     log_file=f"{output_dir}/logs/{processes[0]}/fin/{container_name}.log",
-                    error_log_file=f"{output_dir}/logs/{processes[0]}/error/{container_name}_error.log",
-                    user=user
+                    error_log_file=f"{output_dir}/logs/{processes[0]}/error/{container_name}_error.log"
                 )
                 session.add(mica_job)
                 session.commit()
@@ -646,7 +652,7 @@ async def run_mica_via_airflow(
                           f"DAG Run ID: {run_id}\n"
                           f"User: {user}\n"
                           f"Subject: {subject_id}\n\n"
-                          f"💡 Airflow UI에서 실행 상태를 확인하세요: http://localhost:8081",
+                          f"💡 Airflow UI에서 실행 상태를 확인하세요: http://localhost:8080",
                 "timestamp": datetime.now().isoformat()
             }
         else:
@@ -660,6 +666,7 @@ async def run_mica_via_airflow(
             detail=f"Failed to connect to Airflow: {str(e)}"
         )
 
+
 @app.post("/run-mica-pipeline")
 async def run_mica_pipeline(data: dict):
     """mica-pipeline docker 명령을 실행합니다. (직접 실행 또는 Airflow 통해 실행)"""
@@ -672,74 +679,42 @@ async def run_mica_pipeline(data: dict):
         host_data_dir = os.getenv("HOST_DATA_DIR", "/data")
         
         # 필수 파라미터 확인 (컨테이너 내부 경로)
-        bids_dir = data.get("bids_dir", "/app/data/bids")
-        output_dir = data.get("output_dir", "/app/data/derivatives")
+        bids_dir = data.get("bids_dir", "./data/bids")
+        output_dir = data.get("output_dir", "./data/derivatives")
         subject_id = data.get("subject_id")
         processes = data.get("processes", [])
         
         # 추가 파라미터
         session_id = data.get("session_id", "")
-        fs_licence = data.get("fs_licence", "/app/data/license.txt")
+        fs_licence = data.get("fs_licence", "./data/license.txt")
         threads = data.get("threads", 4)
         freesurfer = data.get("freesurfer", True)
+    
+        #프로세스
+        proc_func_flags = data.get("proc_func_flags", [])
+        dwi_flags = data.get("dwi_flags", [])
+        sc_flags = data.get("sc_flags", [])
         
         # Airflow를 통한 실행
         if use_airflow:
-            # 전체 Subject 실행 여부 확인
-            if subject_id and subject_id.lower() == "all":
-                # BIDS 디렉토리에서 모든 subject 찾기 (컨테이너 내부 경로 사용)
-                bids_path = Path("/app/data/bids")
-                if not bids_path.exists():
-                    raise HTTPException(status_code=404, detail=f"BIDS directory not found: {bids_path}")
-                
-                subjects = [d.name for d in bids_path.iterdir() 
-                           if d.is_dir() and d.name.startswith("sub-") and d.name not in ["__MACOSX", "sub-all"]]
-                
-                if not subjects:
-                    raise HTTPException(status_code=400, detail="No subjects found in BIDS directory")
-                
-                # 각 subject별로 개별 DAG Run 생성
-                all_results = []
-                for sub in subjects:
-                    result = await run_mica_via_airflow(
-                        subject_id=sub,
-                        session_id=session_id,  # 모든 subject에 대해 동일한 session (또는 자동 감지)
-                        processes=processes,
-                        bids_dir=host_data_dir + "/bids",
-                        output_dir=host_data_dir + "/derivatives",
-                        fs_licence=host_data_dir + "/license.txt",
-                        threads=threads,
-                        freesurfer=freesurfer,
-                        user=user
-                    )
-                    all_results.append(result)
-                
-                return {
-                    "success": True,
-                    "mode": "airflow",
-                    "message": f"✅ {len(subjects)}개 Subject의 MICA Pipeline이 Airflow를 통해 시작되었습니다.\n\n"
-                              f"User: {user}\n"
-                              f"Subjects: {', '.join([s.replace('sub-', '') for s in subjects])}\n\n"
-                              f"💡 Airflow UI에서 실행 상태를 확인하세요: http://localhost:8081",
-                    "total_subjects": len(subjects),
-                    "subjects": subjects,
-                    "dag_runs": all_results,
-                    "timestamp": datetime.now().isoformat()
-                }
-            else:
-                # 단일 subject 실행
-                return await run_mica_via_airflow(
-                    subject_id=subject_id,
-                    session_id=session_id,
-                    processes=processes,
-                    bids_dir=host_data_dir + "/bids",
-                    output_dir=host_data_dir + "/derivatives",
-                    fs_licence=host_data_dir + "/license.txt",
-                    threads=threads,
-                    freesurfer=freesurfer,
-                    user=user
-                )
-        
+            return await run_mica_via_airflow(
+                subject_id=subject_id,
+                session_id=session_id,
+                processes=processes,
+                bids_dir=host_data_dir + "/bids",
+                output_dir=host_data_dir + "/derivatives",
+                fs_licence=host_data_dir + "/license.txt",
+                threads=threads,
+                freesurfer=freesurfer,
+                user=user,
+                proc_func_flags=proc_func_flags,
+                dwi_flags=dwi_flags,
+                sc_flags=sc_flags,
+            )
+        def join_tokens(tokens: list[str]) -> str:
+        # 각 토큰을 shlex.quote로 감싸 안전하게 공백/특수문자 처리
+            return " ".join(shlex.quote(t) for t in tokens if t is not None and str(t) != "")
+
         # 컨테이너 내부 경로를 호스트 경로로 변환
         def convert_to_host_path(container_path: str) -> str:
             """컨테이너 경로를 호스트 경로로 변환"""
@@ -827,7 +802,10 @@ async def run_mica_pipeline(data: dict):
                         container_error_log_file = container_log_dir / "error" / f"{container_name}_error.log"
                         
                         # 프로세스 플래그 (하이픈 하나)
-                        process_flags = " ".join([f"-{p}" for p in processes])
+                        base_switches = [f"-{p}" for p in processes]
+                        extra_tokens = (proc_func_flags or []) + (dwi_flags or []) + (sc_flags or [])
+                        process_flags = join_tokens(base_switches + extra_tokens)
+
                         
                         # FreeSurfer 라이센스 파일이 있는지 확인 (컨테이너 경로로)
                         fs_licence_mount = ""
@@ -968,8 +946,10 @@ async def run_mica_pipeline(data: dict):
             container_error_log_file = container_log_dir / "error" / f"{container_name}_error.log"
             
             # 프로세스 플래그 (하이픈 하나)
-            process_flags = " ".join([f"-{p}" for p in processes])
-            
+            base_switches = [f"-{p}" for p in processes]
+            extra_tokens = (proc_func_flags or []) + (dwi_flags or []) + (sc_flags or [])
+            process_flags = join_tokens(base_switches + extra_tokens)
+
             # FreeSurfer 라이센스 파일이 있는지 확인 (컨테이너 경로로)
             fs_licence_mount = ""
             if Path(fs_licence).exists():
@@ -1248,33 +1228,8 @@ async def get_mica_jobs(status: str = None):
                                     job.progress = 100.0
                                     
                                     if airflow_state == "failed":
-                                        # 로그 파일에서 에러 메시지 추출
-                                        error_details = []
-                                        
-                                        # 1. 에러 로그 파일 확인
-                                        if job.error_log_file:
-                                            error_log_path = Path(job.error_log_file)
-                                            if error_log_path.exists() and error_log_path.stat().st_size > 100:
-                                                with open(error_log_path, 'r', encoding='utf-8', errors='ignore') as f:
-                                                    error_content = f.read()
-                                                    error_lines = [line.strip() for line in error_content.split('\n')
-                                                                  if line.strip() and 'ERROR' in line]
-                                                    if error_lines:
-                                                        error_details.extend(error_lines[-3:])
-                                        
-                                        # 2. 표준 로그에서 에러 확인
-                                        if not error_details and job.log_file:
-                                            log_path = Path(job.log_file)
-                                            if log_path.exists():
-                                                with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
-                                                    log_content = f.read()
-                                                    if "[ ERROR ]" in log_content:
-                                                        error_lines = [line.strip() for line in log_content.split('\n')
-                                                                      if 'ERROR' in line and line.strip()]
-                                                        if error_lines:
-                                                            error_details.extend(error_lines[-3:])
-                                        
-                                        job.error_message = '\n'.join(error_details) if error_details else "Pipeline failed. Check Airflow logs."
+                                        # Airflow 로그에서 에러 메시지 추출 (간단히 처리)
+                                        job.error_message = "Airflow DAG execution failed. Check Airflow UI for details."
                                     
                                     db.commit()
                         except Exception as e:
@@ -1340,7 +1295,6 @@ async def get_mica_jobs(status: str = None):
                     "progress": job.progress,
                     "log_file": job.log_file,
                     "error_log_file": job.error_log_file,
-                    "user": job.user if hasattr(job, 'user') else "anonymous",
                     "started_at": job.started_at.isoformat() if job.started_at else None,
                     "completed_at": job.completed_at.isoformat() if job.completed_at else None,
                     "error_message": job.error_message,
@@ -1359,32 +1313,6 @@ async def get_mica_jobs(status: str = None):
             }
         finally:
             db.close()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/mica-jobs/{job_id}")
-async def delete_mica_job(job_id: int):
-    """MICA Pipeline Job을 삭제합니다."""
-    try:
-        db = SessionLocal()
-        try:
-            job = db.query(MicaPipelineJob).filter(MicaPipelineJob.id == job_id).first()
-            
-            if not job:
-                raise HTTPException(status_code=404, detail="Job not found")
-            
-            # Job 삭제
-            db.delete(job)
-            db.commit()
-            
-            return {
-                "success": True,
-                "message": f"Job {job.job_id} deleted successfully"
-            }
-        finally:
-            db.close()
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
