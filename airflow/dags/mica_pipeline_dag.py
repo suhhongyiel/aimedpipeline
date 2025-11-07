@@ -52,7 +52,7 @@ def build_docker_command(**context):
     sc_flags = conf.get('sc_flags', [])
 
     # 호스트 경로 (Docker-in-Docker를 위한 절대 경로)
-    host_data_dir = os.getenv('HOST_DATA_DIR', '/private/boonam/98-dev/aimedpipeline/data')
+    host_data_dir = os.getenv('HOST_DATA_DIR', '/home/admin1/Documents/aimedpipeline/data')
     # 파라미터 추출
     subject_id = conf.get('subject_id', 'sub-001')
     session_id = conf.get('session_id', '')
@@ -210,10 +210,10 @@ def log_completion(**context):
     #100번 기준으로 /home/admin1/Documents/aimedpipeline 이거로 바꾸긴 해야함
     # 로그 경로 목록 (fin / error 디렉토리 모두 확인)
     log_dirs = [
-        Path("/private/boonam/98-dev/aimedpipeline/data/derivatives/logs/proc_func/error"),
-        Path("/private/boonam/98-dev/aimedpipeline/data/derivatives/logs/proc_func/fin"),
-        Path("/private/boonam/98-dev/aimedpipeline/data/derivatives/logs/proc_structural/error"),
-        Path("/private/boonam/98-dev/aimedpipeline/data/derivatives/logs/proc_structural/fin"),
+        Path("/home/admin1/Documents/aimedpipeline/data/derivatives/logs/proc_func/error"),
+        Path("/home/admin1/Documents/aimedpipeline/data/derivatives/logs/proc_func/fin"),
+        Path("/home/admin1/Documents/aimedpipeline/data/derivatives/logs/proc_structural/error"),
+        Path("/home/admin1/Documents/aimedpipeline/data/derivatives/logs/proc_structural/fin"),
     ]
 
     # 개별 로그 파일도 직접 추가 (XCom으로 전달된 파일)
