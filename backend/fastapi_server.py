@@ -574,6 +574,9 @@ async def run_mica_via_airflow(
     threads: int,
     freesurfer: bool,
     user: str,
+    proc_structural_flags: list | None = None,
+    proc_surf_flags: list | None = None,
+    post_structural_flags: list | None = None,
     proc_func_flags: list | None = None,
     dwi_flags: list | None = None,
     sc_flags: list | None = None,
@@ -596,6 +599,9 @@ async def run_mica_via_airflow(
                 "threads": threads,
                 "freesurfer": freesurfer,
                 "user": user,
+                "proc_structural_flags": proc_structural_flags or [],
+                "proc_surf_flags": proc_surf_flags or [],
+                "post_structural_flags": post_structural_flags or [],
                 "proc_func_flags": proc_func_flags or [],
                 "dwi_flags": dwi_flags or [],
                 "sc_flags": sc_flags or [],
@@ -691,6 +697,10 @@ async def run_mica_pipeline(data: dict):
         freesurfer = data.get("freesurfer", True)
     
         #프로세스
+        proc_structural_flags = data.get("proc_structural_flags", [])
+        proc_surf_flags = data.get("proc_surf_flags", [])
+        post_structural_flags = data.get("post_structural_flags", [])
+
         proc_func_flags = data.get("proc_func_flags", [])
         dwi_flags = data.get("dwi_flags", [])
         sc_flags = data.get("sc_flags", [])
@@ -707,6 +717,9 @@ async def run_mica_pipeline(data: dict):
                 threads=threads,
                 freesurfer=freesurfer,
                 user=user,
+                proc_structural_flags=proc_structural_flags,
+                proc_surf_flags=proc_surf_flags,
+                post_structural_flags=post_structural_flags,
                 proc_func_flags=proc_func_flags,
                 dwi_flags=dwi_flags,
                 sc_flags=sc_flags,
@@ -803,7 +816,14 @@ async def run_mica_pipeline(data: dict):
                         
                         # 프로세스 플래그 (하이픈 하나)
                         base_switches = [f"-{p}" for p in processes]
-                        extra_tokens = (proc_func_flags or []) + (dwi_flags or []) + (sc_flags or [])
+                        extra_tokens = (
+                            (proc_structural_flags or []) +
+                            (proc_surf_flags or []) +
+                            (post_structural_flags or []) +
+                            (proc_func_flags or []) +
+                            (dwi_flags or []) +
+                            (sc_flags or [])
+                        )
                         process_flags = join_tokens(base_switches + extra_tokens)
 
                         
@@ -947,7 +967,14 @@ async def run_mica_pipeline(data: dict):
             
             # 프로세스 플래그 (하이픈 하나)
             base_switches = [f"-{p}" for p in processes]
-            extra_tokens = (proc_func_flags or []) + (dwi_flags or []) + (sc_flags or [])
+            extra_tokens = (
+                (proc_structural_flags or []) +
+                (proc_surf_flags or []) +
+                (post_structural_flags or []) +
+                (proc_func_flags or []) +
+                (dwi_flags or []) +
+                (sc_flags or [])
+            )
             process_flags = join_tokens(base_switches + extra_tokens)
 
             # FreeSurfer 라이센스 파일이 있는지 확인 (컨테이너 경로로)
