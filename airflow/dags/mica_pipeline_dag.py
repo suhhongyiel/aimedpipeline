@@ -8,6 +8,8 @@ from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 import os
+from pathlib import Path
+import re
 
 DAG_ID = "mica_pipeline"
 
@@ -148,7 +150,15 @@ def build_docker_command(**context):
     mkdir_cmd = f"mkdir -p {container_log_base}/fin {container_log_base}/error"
     # Docker 명령어 (로그 리다이렉션 포함 - Airflow 컨테이너 내부 경로)
     docker_cmd = f"{' '.join(cmd_parts)} > {container_log_file} 2> {container_error_log_file}"
-    
+
+    # docker 완료 후 log에 error 검사 (Airflow fail 유도)
+    check_log_cmd = f"""
+    if grep -iE 'error|traceback|license|failed|killed|permission denied' {container_log_file} {container_error_log_file} >/dev/null 2>&1; then
+        echo '❌ Error detected in logs.';
+        tail -n 10 {container_log_file};
+        exit 1;
+    fi
+    """
     # 최종 명령어: docker run 후 컨테이너가 완료될 때까지 대기
     # 1. 로그 디렉토리 생성
     # 2. Docker 실행 (백그라운드)
@@ -177,33 +187,86 @@ def build_docker_command(**context):
     return full_cmd
 
 def log_completion(**context):
-    """작업 완료 로그 및 에러 검증"""
+    """MICA Pipeline 완료 후 로그 검증 (error 패턴 및 로그 길이 포함)"""
     from pathlib import Path
-    
+    import re
+
     ti = context['ti']
     container_name = ti.xcom_pull(key='container_name', task_ids='build_command')
-    log_file = ti.xcom_pull(key='log_file', task_ids='build_command')
-    
-    print(f"=" * 80)
-    print(f"MICA Pipeline 완료")
+    main_log_file = ti.xcom_pull(key='log_file', task_ids='build_command')
+    error_log_file = ti.xcom_pull(key='error_log_file', task_ids='build_command')
+
+    print("=" * 80)
+    print(f"🧠 MICA Pipeline 완료 검증 시작")
     print(f"Container: {container_name}")
-    
-    # 로그 파일에서 에러 확인 (MICA Pipeline은 exit 0으로 종료해도 에러 발생 가능)
-    log_path = Path(log_file)
-    if log_path.exists():
-        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
-            log_content = f.read()
-            if "[ ERROR ]" in log_content:
-                error_lines = [line for line in log_content.split('\n') if 'ERROR' in line]
-                print(f"\n{'!' * 80}")
-                print(f"WARNING: Errors found in log file!")
-                print(f"{'!' * 80}")
-                for line in error_lines[-5:]:  # 마지막 5개 에러 라인
-                    print(line)
-                print(f"{'!' * 80}\n")
-                raise Exception("MICA Pipeline completed with errors. Check log file for details.")
-    
-    print(f"=" * 80)
+    print("=" * 80)
+
+    # 주요 검사 기준
+    error_keywords = [
+        "error", "traceback", "exception", "license",
+        "no such file", "killed", "segmentation fault",
+        "failed", "permission denied"
+    ]
+    #100번 기준으로 /home/admin1/Documents/aimedpipeline 이거로 바꾸긴 해야함
+    # 로그 경로 목록 (fin / error 디렉토리 모두 확인)
+    log_dirs = [
+        Path("/private/boonam/98-dev/aimedpipeline/data/derivatives/logs/proc_func/error"),
+        Path("/private/boonam/98-dev/aimedpipeline/data/derivatives/logs/proc_func/fin"),
+        Path("/private/boonam/98-dev/aimedpipeline/data/derivatives/logs/proc_structural/error"),
+        Path("/private/boonam/98-dev/aimedpipeline/data/derivatives/logs/proc_structural/fin"),
+    ]
+
+    # 개별 로그 파일도 직접 추가 (XCom으로 전달된 파일)
+    xcom_logs = [Path(main_log_file), Path(error_log_file)]
+
+    found_issues = []
+    total_lines = 0
+
+    # 로그 파일들 순회
+    for log_source in log_dirs + xcom_logs:
+        if not log_source.exists():
+            continue
+
+        # 개별 파일 또는 디렉토리 처리
+        if log_source.is_dir():
+            log_files = list(log_source.glob("*.log"))
+        else:
+            log_files = [log_source]
+
+        for log_file in log_files:
+            try:
+                text = log_file.read_text(errors="ignore")
+            except Exception as e:
+                print(f"⚠️ Failed to read {log_file}: {e}")
+                continue
+
+            lines = text.splitlines()
+            total_lines += len(lines)
+
+            # 1️⃣ 에러 문자열 검사
+            for kw in error_keywords:
+                if re.search(kw, text, re.IGNORECASE):
+                    found_issues.append((log_file, kw))
+
+            # 2️⃣ 로그 줄 수 너무 짧으면 경고
+            if len(lines) < 50:
+                found_issues.append((log_file, f"Too short ({len(lines)} lines)"))
+
+    # 3️⃣ 문제 있으면 실패 처리
+    if found_issues:
+        print("\n❌ Issues found in MICA logs:")
+        for f, msg in found_issues:
+            print(f"  - {f}: {msg}")
+        print("=" * 80)
+        raise Exception("Detected errors or insufficient log content in MICA pipeline outputs.")
+
+    # 4️⃣ 로그가 너무 없으면 실패
+    if total_lines == 0:
+        raise Exception("No log content found — pipeline may have crashed early.")
+
+    print("✅ Log completion check passed successfully.")
+    print("=" * 80)
+
 
 default_args = {
     "owner": "mica_pipeline",
