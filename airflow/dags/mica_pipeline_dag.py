@@ -42,6 +42,9 @@ def build_docker_command(**context):
     
     ti = context['ti']
     conf = context['dag_run'].conf
+    proc_structural_flags = conf.get('proc_structural_flags', [])
+    proc_surf_flags = conf.get('proc_surf_flags', [])
+    post_structural_flags = conf.get('post_structural_flags', [])
     proc_func_flags = conf.get('proc_func_flags', [])
     dwi_flags = conf.get('dwi_flags', [])
     sc_flags = conf.get('sc_flags', [])
@@ -99,6 +102,9 @@ def build_docker_command(**context):
 
     # 세부 플래그(이미 ["-옵션", "값", ...] 형태라고 가정)
     extra_flags = []
+    extra_flags += proc_structural_flags
+    extra_flags += proc_surf_flags
+    extra_flags += post_structural_flags
     extra_flags += proc_func_flags
     extra_flags += dwi_flags
     extra_flags += sc_flags
