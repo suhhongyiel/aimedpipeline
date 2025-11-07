@@ -1203,6 +1203,27 @@ cmd_parts.extend([
 
 ---
 
+## 📝 Recent Updates
+
+### v2.2.0 (2025-11-07) - Multi-Server Deployment Support
+
+#### ✨ 새 기능
+- ✅ **다중 서버 배포 지원**: 환경 변수를 통한 경로 설정으로 어떤 서버에서도 사용 가능
+- ✅ **HOST_DATA_DIR 환경 변수**: Docker-in-Docker 환경에서 호스트 절대 경로 자동 처리
+- ✅ **향상된 설치 가이드**: 서버별 설정 방법 상세 문서화
+
+#### 🔧 개선
+- 📊 Airflow DAG 실행 안정성 향상 (`docker wait` 타이밍 개선)
+- 🔍 BIDS 경로 자동 감지 (컨테이너 내부/호스트 경로 분리)
+- ⚡ Backend API 경로 처리 로직 개선
+
+#### 🐛 버그 수정
+- ❌ Docker-in-Docker 볼륨 마운트 경로 문제 해결
+- ❌ Airflow DAG Run 생성 실패 문제 해결
+- ❌ Backend에서 BIDS 디렉토리 찾기 실패 문제 해결
+
+---
+
 ## 📄 License
 
 이 프로젝트는 MIT 라이센스를 따릅니다.
