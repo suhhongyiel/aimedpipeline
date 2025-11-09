@@ -1057,7 +1057,7 @@ async def run_mica_pipeline(data: dict):
             # ✅ NEW: freesurfer 존재 플래그로만
             if freesurfer:
                 cmd += "-freesurfer "
-
+            # 
             cmd += f"> {container_log_file} 2> {container_error_log_file}"
             
             # 명령 실행 (백그라운드로 실행하고 즉시 반환)

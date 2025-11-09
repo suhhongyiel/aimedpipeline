@@ -168,7 +168,7 @@ def build_docker_command(**context):
     
     if os.path.exists(fs_licence):
         cmd_parts.append(f"-fs_licence {fs_licence}")
-    
+    # 
     cmd_parts.extend([
         f"-threads {threads}",
         process_flags,
