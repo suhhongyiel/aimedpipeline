@@ -65,7 +65,7 @@ def build_docker_command(**context):
     
     # subject ID에서 "sub-" 제거
     sub_id = subject_id.replace("sub-", "")
-    # new 
+    # new #
     def normalize_flags(tokens: list[str]) -> list[str]:
         with_val = {"-T1wStr", "-fs_licence", "-surf_dir", "-T1", "-atlas",
                     "-mainScanStr", "-func_pe", "-func_rpe", "-mainScanRun",
