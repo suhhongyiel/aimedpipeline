@@ -728,6 +728,54 @@ async def run_mica_pipeline(data: dict):
         # 각 토큰을 shlex.quote로 감싸 안전하게 공백/특수문자 처리
             return " ".join(shlex.quote(t) for t in tokens if t is not None and str(t) != "")
 
+        # 추가
+        def normalize_flags(tokens: list[str]) -> list[str]:
+            """
+            - 값 동반 옵션은 '마지막 값 우선'으로 1회만 남김
+            - 토글형 플래그는 중복 제거
+            - -freesurfer/-fs_licence 는 여기서 제거(전역에서 1회만 삽입)
+            """
+            with_val = {
+                "-T1wStr", "-fs_licence", "-surf_dir", "-T1", "-atlas",
+                "-mainScanStr", "-func_pe", "-func_rpe", "-mainScanRun",
+                "-phaseReversalRun", "-topupConfig", "-icafixTraining",
+                "-sesAnat"
+            }
+            kv = {}               # option -> value (마지막 값이 덮어씀)
+            toggles = set()       # 토글형 모음
+            passthrough = []      # 기타(값 없는) 토큰 보관
+
+            it = iter(tokens)
+            for t in it:
+                if t in with_val:
+                    v = next(it, None)
+                    # 값이 없거나 다음이 또 옵션이면 skip
+                    if v is None or (isinstance(v, str) and v.startswith("-")):
+                        continue
+                    kv[t] = v
+                else:
+                    # -freesurfer/-fs_licence 는 전역에서만 넣기: 여기서 제거
+                    if t in ("-freesurfer",):
+                        continue
+                    if t == "-fs_licence":
+                        _ = next(it, None)  # 값 소모만 하고 버림
+                        continue
+                    # 일반 토글/스위치
+                    toggles.add(t) if t.startswith("-") else passthrough.append(t)
+
+            # 값 동반 옵션 중 전역에서 넣을 -fs_licence 제외
+            out = []
+            for k, v in kv.items():
+                if k == "-fs_licence":
+                    continue
+                out += [k, v]
+
+            # 토글은 -freesurfer 제외(위에서 이미 제거)
+            out += sorted(t for t in toggles if t not in ("-freesurfer",))
+
+            # 나머지 토큰(보통은 없음)
+            out += passthrough
+            return out
         # 컨테이너 내부 경로를 호스트 경로로 변환
         def convert_to_host_path(container_path: str) -> str:
             """컨테이너 경로를 호스트 경로로 변환"""
@@ -824,7 +872,8 @@ async def run_mica_pipeline(data: dict):
                             (dwi_flags or []) +
                             (sc_flags or [])
                         )
-                        process_flags = join_tokens(base_switches + extra_tokens)
+                        normalized = normalize_flags(extra_tokens)
+                        process_flags = join_tokens(base_switches + normalized)
 
                         
                         # FreeSurfer 라이센스 파일이 있는지 확인 (컨테이너 경로로)
@@ -975,7 +1024,8 @@ async def run_mica_pipeline(data: dict):
                 (dwi_flags or []) +
                 (sc_flags or [])
             )
-            process_flags = join_tokens(base_switches + extra_tokens)
+            normalized = normalize_flags(extra_tokens)
+            process_flags = join_tokens(base_switches + normalized)
 
             # FreeSurfer 라이센스 파일이 있는지 확인 (컨테이너 경로로)
             fs_licence_mount = ""
@@ -1002,9 +1052,13 @@ async def run_mica_pipeline(data: dict):
                 cmd += f"-fs_licence {host_fs_licence} "
             
             cmd += f"-threads {threads} " \
-                   f"{process_flags} " \
-                   f"-freesurfer {'TRUE' if freesurfer else 'FALSE'} " \
-                   f"> {container_log_file} 2> {container_error_log_file}"
+                   f"{process_flags} "
+
+            # ✅ NEW: freesurfer 존재 플래그로만
+            if freesurfer:
+                cmd += "-freesurfer "
+
+            cmd += f"> {container_log_file} 2> {container_error_log_file}"
             
             # 명령 실행 (백그라운드로 실행하고 즉시 반환)
             process = subprocess.Popen(

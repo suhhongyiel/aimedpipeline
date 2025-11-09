@@ -63,7 +63,37 @@ def build_docker_command(**context):
     
     # subject ID에서 "sub-" 제거
     sub_id = subject_id.replace("sub-", "")
-    
+    # new 
+    def normalize_flags(tokens: list[str]) -> list[str]:
+        with_val = {"-T1wStr", "-fs_licence", "-surf_dir", "-T1", "-atlas",
+                    "-mainScanStr", "-func_pe", "-func_rpe", "-mainScanRun",
+                    "-phaseReversalRun", "-topupConfig", "-icafixTraining",
+                    "-sesAnat"}
+        kv = {}
+        toggles = set()
+        passthrough = []
+        it = iter(tokens)
+        for t in it:
+            if t in with_val:
+                v = next(it, None)
+                if v is None or (isinstance(v, str) and v.startswith("-")):
+                    continue
+                kv[t] = v
+            else:
+                if t in ("-freesurfer",):
+                    continue
+                if t == "-fs_licence":
+                    _ = next(it, None)
+                    continue
+                toggles.add(t) if t.startswith("-") else passthrough.append(t)
+        out = []
+        for k, v in kv.items():
+            if k == "-fs_licence":
+                continue
+            out += [k, v]
+        out += sorted(t for t in toggles if t not in ("-freesurfer",))
+        out += passthrough
+        return out
     # Session 자동 감지 (session_id가 없을 때)
     if not session_id:
         subject_path = Path(bids_dir) / subject_id
@@ -109,7 +139,8 @@ def build_docker_command(**context):
     extra_flags += dwi_flags
     extra_flags += sc_flags
 
-    process_flags = " ".join(process_switches + extra_flags)
+    normalized = normalize_flags(extra_flags)
+    process_flags = " ".join(process_switches + normalized)
 
 
     
@@ -141,8 +172,11 @@ def build_docker_command(**context):
     cmd_parts.extend([
         f"-threads {threads}",
         process_flags,
-        f"-freesurfer {'TRUE' if freesurfer else 'FALSE'}",
+        # ✅ NEW: 존재 플래그만
+        # f"-freesurfer {'TRUE' if freesurfer else 'FALSE'}",
     ])
+    if freesurfer:
+        cmd_parts.append("-freesurfer")
     
     # 로그 디렉토리 생성 명령 (Airflow 컨테이너 내부 경로)
     mkdir_cmd = f"mkdir -p {container_log_base}/fin {container_log_base}/error"
