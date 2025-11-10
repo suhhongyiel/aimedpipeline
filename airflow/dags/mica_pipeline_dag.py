@@ -168,7 +168,22 @@ def build_docker_command(**context):
     extra_flags += dwi_flags
     extra_flags += sc_flags
     normalized = normalize_flags(extra_flags)
-    process_flags = " ".join(process_switches + normalized)
+   
+    # ✅ 순서 고정 및 중복 제거
+    ordered_flags = []
+    if "-proc_structural" in process_switches:
+        ordered_flags.append("-proc_structural")
+    if "-proc_func" in process_switches:
+        ordered_flags.append("-proc_func")
+        # func 관련 옵션은 -proc_func 바로 뒤에 붙임
+        ordered_flags += [f for f in normalized if f in ("-NSR", "-dropTR", "-noFIX")]
+    if "-proc_dwi" in process_switches:
+        ordered_flags.append("-proc_dwi")
+    if "-SC" in process_switches:
+        ordered_flags.append("-SC")  
+    ordered_flags += [f for f in normalized if f not in ("-NSR", "-dropTR", "-noFIX")]
+    process_flags = " ".join(ordered_flags)
+  
 
     # -------------------------
     # Docker 명령어 구성 분기
