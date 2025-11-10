@@ -78,6 +78,8 @@ def build_docker_command(**context):
     threads = conf.get('threads', 4)
     freesurfer = conf.get('freesurfer', True)
 
+    must_mount_fs_licence = bool(fs_licence)
+
     # 디버깅: conf에서 받은 값 확인
     print(f"🔍 DEBUG - Received from Airflow conf:")
     print(f"  subject_id: {subject_id}")
@@ -196,8 +198,7 @@ def build_docker_command(**context):
     ]
 
     if simple_structural:
-        use_fs_licence_min = ('proc_structural' in processes) and bool(fs_licence)
-        if use_fs_licence_min:
+        if must_mount_fs_licence:
             cmd_parts.append(f"-v {fs_licence}:{fs_licence}")
 
         cmd_parts += [
@@ -213,16 +214,10 @@ def build_docker_command(**context):
             print(f"⚠️ DEBUG (simple_structural) - session_id is empty, NOT adding -ses option")
         cmd_parts.append("-proc_structural")
 
-        if use_fs_licence_min:
-            cmd_parts.append(f"-fs_licence {fs_licence}")
+        if must_mount_fs_licence:
+            cmd_parts.append(f"-v {fs_licence}:{fs_licence}")
     else:
-        use_fs_licence = (
-            ('proc_structural' in processes) or
-            ('proc_surf' in processes and freesurfer)
-        ) and bool(fs_licence)
-
-        if use_fs_licence:
-            # 호스트 경로 그대로 마운트 (bids_dir/output_dir처럼)
+        if must_mount_fs_licence:
             cmd_parts.append(f"-v {fs_licence}:{fs_licence}")
 
         cmd_parts += [
@@ -245,7 +240,8 @@ def build_docker_command(**context):
         if 'proc_surf' in processes:
             cmd_parts.append(f"-freesurfer {'TRUE' if freesurfer else 'FALSE'}")
 
-        if use_fs_licence:
+        # 라이선스 인자는 항상 추가
+        if must_mount_fs_licence:
             cmd_parts.append(f"-fs_licence {fs_licence}")
 
     # 로그 디렉토리 생성 (Airflow 컨테이너 내부 경로)
