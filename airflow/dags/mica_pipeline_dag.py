@@ -1,15 +1,27 @@
 """
 MICA Pipeline Airflow DAG
 여러 사용자가 동시에 MICA Pipeline을 실행할 때 중앙 집중식 관리를 위한 DAG
+리소스 기반 스케줄링을 통해 시스템 리소스(CPU, 메모리)에 따라 동적으로 작업 할당량을 조절합니다.
 """
 from __future__ import annotations
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
+from airflow.utils.task_group import TaskGroup
 import os
 from pathlib import Path
 import re
+
+# 리소스 관리 모듈 import
+try:
+    from resource_manager import check_system_resources, get_resource_pool_slots
+except ImportError:
+    # 리소스 관리 모듈이 없는 경우 기본 함수 정의
+    def check_system_resources():
+        return {"success": True, "recommended_max_tasks": 5, "can_run_more": True}
+    def get_resource_pool_slots():
+        return 5
 
 DAG_ID = "mica_pipeline"
 
@@ -343,6 +355,23 @@ default_args = {
     "execution_timeout": timedelta(hours=6),  # 최대 6시간
 }
 
+# 시스템 리소스에 기반한 동적 concurrency 계산
+# 리소스가 충분하면 더 많은 작업 실행, 부족하면 제한
+try:
+    resource_info = check_system_resources()
+    if resource_info.get("success"):
+        # 리소스 기반 동적 concurrency 설정
+        # CPU와 메모리 중 작은 값 사용, 최소 2개는 보장
+        dynamic_concurrency = max(2, resource_info.get("recommended_max_tasks", 5))
+        # 최대 10개로 제한 (과도한 리소스 사용 방지)
+        dynamic_concurrency = min(dynamic_concurrency, 10)
+        print(f"🔍 System resources check: Recommended concurrency = {dynamic_concurrency}")
+    else:
+        dynamic_concurrency = 5  # 기본값
+except Exception as e:
+    print(f"⚠️ Failed to check system resources: {e}, using default concurrency")
+    dynamic_concurrency = 5  # 기본값
+
 with DAG(
     dag_id=DAG_ID,
     start_date=datetime(2025, 1, 1),
@@ -351,20 +380,45 @@ with DAG(
     default_args=default_args,
     tags=["mica", "neuroimaging", "production"],
     max_active_runs=5,  # 최대 5개의 DAG 동시 실행
-    concurrency=10,  # 최대 10개의 task 동시 실행
-    description="MICA Pipeline - Multi-user neuroimaging processing pipeline",
+    concurrency=dynamic_concurrency,  # 시스템 리소스에 기반한 동적 동시 실행 수
+    description="MICA Pipeline - Multi-user neuroimaging processing pipeline with resource-based scheduling",
 ) as dag:
 
+    # Task 0: 리소스 확인 (선택적, 리소스 체크 실패해도 계속 진행)
+    def check_resources(**context):
+        """시스템 리소스를 확인하고 로그에 기록합니다."""
+        try:
+            resources = check_system_resources()
+            if resources.get("success"):
+                print(f"📊 System Resources:")
+                print(f"  CPU: {resources['cpu']['percent']}% used ({resources['cpu']['available']:.1f} cores available)")
+                print(f"  Memory: {resources['memory']['percent']}% used ({resources['memory']['available_gb']:.2f} GB available)")
+                print(f"  Running containers: {resources['running_containers']}")
+                print(f"  Recommended max tasks: {resources['recommended_max_tasks']}")
+                print(f"  Can run more: {resources['can_run_more']}")
+            else:
+                print(f"⚠️ Resource check failed: {resources.get('error', 'Unknown error')}")
+        except Exception as e:
+            print(f"⚠️ Resource check error: {e}")
+    
+    resource_check_task = PythonOperator(
+        task_id="check_resources",
+        python_callable=check_resources,
+        pool="default_pool",  # 리소스 풀 사용 (선택적)
+    )
+    
     # Task 1: 시작 로그
     start_task = PythonOperator(
         task_id="log_start",
         python_callable=log_start,
+        pool="default_pool",  # 리소스 풀 사용
     )
     
     # Task 2: Docker 명령어 생성
     build_command_task = PythonOperator(
         task_id="build_command",
         python_callable=build_docker_command,
+        pool="default_pool",  # 리소스 풀 사용
     )
     
     # Task 3: MICA Pipeline 실행
@@ -373,14 +427,17 @@ with DAG(
         task_id="run_micapipe",
         bash_command="{{ ti.xcom_pull(key='docker_command', task_ids='build_command') }}",
         execution_timeout=timedelta(hours=6),
+        pool="default_pool",  # 리소스 풀 사용 (가장 리소스 집약적인 작업)
     )
     
     # Task 4: 완료 로그
     complete_task = PythonOperator(
         task_id="log_completion",
         python_callable=log_completion,
+        pool="default_pool",  # 리소스 풀 사용
     )
     
     # Task 의존성 설정
-    start_task >> build_command_task >> run_micapipe_task >> complete_task
+    # 리소스 확인 -> 시작 로그 -> 명령어 생성 -> 실행 -> 완료 로그
+    resource_check_task >> start_task >> build_command_task >> run_micapipe_task >> complete_task
 

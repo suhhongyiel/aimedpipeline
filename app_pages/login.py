@@ -30,7 +30,13 @@ def render():
             
             if submit_button:
                 # 간단한 인증 (실제로는 DB나 외부 인증 시스템 사용 권장)
-                if username == "hysuh" and password == "hysuh":
+                # 사용자 인증 정보
+                users = {
+                    "hysuh": "hysuh",
+                    "shim": "shim"
+                }
+                
+                if username in users and users[username] == password:
                     st.session_state.authenticated = True
                     st.session_state.username = username
                     st.session_state.user_id = username
@@ -43,5 +49,5 @@ def render():
                     st.error("❌ 사용자명 또는 비밀번호가 올바르지 않습니다.")
         
         st.markdown("---")
-        st.info("💡 기본 계정: **hysuh** / **hysuh**")
+        st.info("💡 사용 가능한 계정:\n- **hysuh** / **hysuh**\n- **shim** / **shim**")
 

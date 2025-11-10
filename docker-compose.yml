@@ -71,6 +71,10 @@ services:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
       AIRFLOW__CORE__FERNET_KEY: ""
+      # 리소스 기반 스케줄링 설정
+      AIRFLOW__CORE__PARALLELISM: "10"  # 전역 최대 동시 실행 작업 수
+      AIRFLOW__CORE__DAG_CONCURRENCY: "5"  # DAG별 최대 동시 실행 작업 수
+      AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "10"  # DAG당 최대 활성 작업 수
       HOST_DATA_DIR: /home/admin1/Documents/aimedpipeline/data  # 호스트의 실제 절대 경로 (Docker-in-Docker용)
       PROJECT_ROOT: /home/admin1/Documents/aimedpipeline  # 프로젝트 루트 경로
     volumes:
@@ -83,7 +87,7 @@ services:
       bash -c "
         set -e
         echo 'Installing dependencies...'
-        apt-get update -qq && apt-get install -y -qq docker.io curl
+        apt-get update -qq && apt-get install -y -qq docker.io curl python3-psutil
         
         echo 'Creating log directory...'
         mkdir -p /opt/airflow/logs
