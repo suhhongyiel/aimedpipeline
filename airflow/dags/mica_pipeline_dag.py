@@ -44,6 +44,8 @@ def build_docker_command(**context):
     
     ti = context['ti']
     conf = context['dag_run'].conf
+
+    # 세부 플래그 입력 (struct/surf는 옵션 사용 안 함)
     proc_structural_flags = conf.get('proc_structural_flags', [])
     proc_surf_flags = conf.get('proc_surf_flags', [])
     post_structural_flags = conf.get('post_structural_flags', [])
@@ -53,27 +55,30 @@ def build_docker_command(**context):
 
     # 호스트 경로 (Docker-in-Docker를 위한 절대 경로)
     host_data_dir = os.getenv('HOST_DATA_DIR', '/home/admin1/Documents/aimedpipeline/data')
+
     # 파라미터 추출
     subject_id = conf.get('subject_id', 'sub-001')
     session_id = conf.get('session_id', '')
     processes = conf.get('processes', ['proc_structural'])
     bids_dir = conf.get('bids_dir', '/data/bids')
     output_dir = conf.get('output_dir', '/data/derivatives')
-    fs_licence = conf.get('fs_licence', '/data/license.txt')
+    fs_licence = conf.get('fs_licence', '/home/admin1/Documents/aimedpipeline/data/license.txt')
     threads = conf.get('threads', 4)
     freesurfer = conf.get('freesurfer', True)
+
+    # ✅ proc_structural 단독 여부
+    simple_structural = (processes == ['proc_structural'])
     
     # subject ID에서 "sub-" 제거
     sub_id = subject_id.replace("sub-", "")
-    # new #
+
+    # --- flags 정리 유틸 ---
     def normalize_flags(tokens: list[str]) -> list[str]:
         with_val = {"-T1wStr", "-fs_licence", "-surf_dir", "-T1", "-atlas",
                     "-mainScanStr", "-func_pe", "-func_rpe", "-mainScanRun",
                     "-phaseReversalRun", "-topupConfig", "-icafixTraining",
                     "-sesAnat"}
-        kv = {}
-        toggles = set()
-        passthrough = []
+        kv, toggles, passthrough = {}, set(), []
         it = iter(tokens)
         for t in it:
             if t in with_val:
@@ -96,129 +101,136 @@ def build_docker_command(**context):
         out += sorted(t for t in toggles if t not in ("-freesurfer",))
         out += passthrough
         return out
+
+    sub_dirname = subject_id if subject_id.startswith("sub-") else f"sub-{subject_id}"
+    subject_path = Path(bids_dir) / sub_dirname
     # Session 자동 감지 (session_id가 없을 때)
     if not session_id:
-        subject_path = Path(bids_dir) / subject_id
+        #subject_path = Path(bids_dir) / subject_id
         if subject_path.exists():
-            # ses-* 디렉토리 찾기
-            session_dirs = [d.name.replace("ses-", "") for d in subject_path.iterdir() 
-                          if d.is_dir() and d.name.startswith("ses-")]
+            session_dirs = [d.name.replace("ses-", "") for d in subject_path.iterdir()
+                            if d.is_dir() and d.name.startswith("ses-")]
             if session_dirs:
-                session_id = session_dirs[0]  # 첫 번째 session 사용
+                session_id = session_dirs[0]   # 첫 번째 세션 자동 선택
                 print(f"Auto-detected session: {session_id}")
-            else:
-                print("No session found - using direct path")
         else:
             print(f"Warning: Subject path not found: {subject_path}")
     
-    # 컨테이너 이름 생성
+    # 컨테이너 이름
     container_name = f"{subject_id}"
     if session_id:
         container_name += f"_ses-{session_id}"
     if processes:
         container_name += f"_{processes[0]}"
     
-    # 로그 디렉토리
+    # 로그 경로
     log_base = f"{output_dir}/logs/{processes[0] if processes else 'default'}"
     log_file = f"{log_base}/fin/{container_name}.log"
     error_log_file = f"{log_base}/error/{container_name}_error.log"
 
-    # 로그 디렉토리 (컨테이너 내부 경로 - 로그 파일 읽기용)
+    # 컨테이너에서 보이는 로그 경로(/data로 치환)
     container_log_base = log_base.replace(host_data_dir, '/data')
     container_log_file = log_file.replace(host_data_dir, '/data')
     container_error_log_file = error_log_file.replace(host_data_dir, '/data')
 
-    # 프로세스 플래그
-    # 기본 프로세스 스위치들(-proc_func, -proc_dwi, -SC 등)
+    # 기본 프로세스 스위치들(-proc_structural, -proc_surf, -post_structural, -proc_func, -dwi, -SC ...)
     process_switches = [f"-{p}" for p in processes]
 
-    # 세부 플래그(이미 ["-옵션", "값", ...] 형태라고 가정)
+    # 세부 플래그(허용된 것만): post_structural/func/dwi/sc
+    # (struct/surf 옵션은 사용하지 않으므로 제외)
     extra_flags = []
-    extra_flags += proc_structural_flags
-    extra_flags += proc_surf_flags
+    #extra_flags += proc_structural_flags
+    #extra_flags += proc_surf_flags  
     extra_flags += post_structural_flags
     extra_flags += proc_func_flags
     extra_flags += dwi_flags
     extra_flags += sc_flags
-    ## 
     normalized = normalize_flags(extra_flags)
     process_flags = " ".join(process_switches + normalized)
 
-
-    
-    # Docker 명령어 구성
+    # -------------------------
+    # Docker 명령어 구성 분기
+    # -------------------------
     cmd_parts = [
         "docker run --rm",
         f"--name {container_name}",
         f"-v {bids_dir}:{bids_dir}",
         f"-v {output_dir}:{output_dir}",
     ]
-    
-    # FreeSurfer 라이센스
-    if os.path.exists(fs_licence):
-        cmd_parts.append(f"-v {fs_licence}:{fs_licence}")
-    
-    cmd_parts.extend([
-        "micalab/micapipe:v0.2.3",
-        f"-bids {bids_dir}",
-        f"-out {output_dir}",
-        f"-sub {sub_id}",
-    ])
-    
-    if session_id:
-        cmd_parts.append(f"-ses {session_id}")
-    
-    if os.path.exists(fs_licence):
-        cmd_parts.append(f"-fs_licence {fs_licence}")
-    # 
-    cmd_parts.extend([
-        f"-threads {threads}",
-        process_flags,
-        # ✅ NEW: 존재 플래그만
-        # f"-freesurfer {'TRUE' if freesurfer else 'FALSE'}",
-    ])
-    if freesurfer:
-        cmd_parts.append("-freesurfer")
-    
-    # 로그 디렉토리 생성 명령 (Airflow 컨테이너 내부 경로)
+
+    if simple_structural:
+        use_fs_licence_min = ('proc_structural' in processes) and bool(fs_licence)
+        if use_fs_licence_min:
+            cmd_parts.append(f"-v {fs_licence}:{fs_licence}")
+
+        cmd_parts += [
+            "micalab/micapipe:v0.2.3",
+            f"-bids {bids_dir}",
+            f"-out {output_dir}",
+            f"-sub {sub_id}",
+        ]
+        if session_id:
+            cmd_parts.append(f"-ses {session_id}")
+        cmd_parts.appednd("-proc_structural")
+
+        if use_fs_licence_min:
+            cmd_parts.append(f"-fs_licence {fs_licence}")
+    else:
+        use_fs_licence = (
+            ('proc_structural' in processes) or
+            ('proc_surf' in processes and freesurfer)
+        ) and bool(fs_licence)
+
+        if use_fs_licence:
+            # 호스트 경로 그대로 마운트 (bids_dir/output_dir처럼)
+            cmd_parts.append(f"-v {fs_licence}:{fs_licence}")
+
+        cmd_parts += [
+            "micalab/micapipe:v0.2.3",
+            f"-bids {bids_dir}",
+            f"-out {output_dir}",
+            f"-sub {sub_id}",
+        ]
+        if session_id:
+            cmd_parts.append(f"-ses {session_id}")
+
+        cmd_parts += [
+            f"-threads {threads}",
+            process_flags,
+        ]
+
+        if 'proc_surf' in processes:
+            cmd_parts.append(f"-freesurfer {'TRUE' if freesurfer else 'FALSE'}")
+
+        if use_fs_licence:
+            cmd_parts.append(f"-fs_licence {fs_licence}")
+
+    # 로그 디렉토리 생성 (Airflow 컨테이너 내부 경로)
     mkdir_cmd = f"mkdir -p {container_log_base}/fin {container_log_base}/error"
-    # Docker 명령어 (로그 리다이렉션 포함 - Airflow 컨테이너 내부 경로)
+
+    # Docker 실행 (로그 리다이렉션 포함 - Airflow 컨테이너 내부 경로)
     docker_cmd = f"{' '.join(cmd_parts)} > {container_log_file} 2> {container_error_log_file}"
 
-    # docker 완료 후 log에 error 검사 (Airflow fail 유도)
-    check_log_cmd = f"""
-    if grep -iE 'error|traceback|license|failed|killed|permission denied' {container_log_file} {container_error_log_file} >/dev/null 2>&1; then
-        echo '❌ Error detected in logs.';
-        tail -n 10 {container_log_file};
-        exit 1;
-    fi
-    """
-    # 최종 명령어: docker run 후 컨테이너가 완료될 때까지 대기
-    # 1. 로그 디렉토리 생성
-    # 2. Docker 실행 (백그라운드)
-    # 3. 컨테이너 시작 대기
-    # 4. docker wait로 컨테이너 종료 대기
-    # 5. exit code 확인하여 에러면 실패 처리
+    # docker wait로 종료 대기 및 오류 탐지(필요시 강화)
     full_cmd = f"""
     {mkdir_cmd} && \\
     ({docker_cmd} &) && \\
     sleep 2 && \\
-    
     docker wait {container_name} || \\
     (echo "Container {container_name} failed" && exit 1)
     """.strip()
-    
-    
-    print(f"Generated command:")
+
+    print("Generated command:")
     print(full_cmd)
-    
-    # XCom에 저장
+
+    # XCom push
     ti.xcom_push(key='docker_command', value=full_cmd)
     ti.xcom_push(key='container_name', value=container_name)
     ti.xcom_push(key='log_file', value=container_log_file)
     ti.xcom_push(key='error_log_file', value=container_error_log_file)
 
     return full_cmd
+
 
 def log_completion(**context):
     """MICA Pipeline 완료 후 로그 검증 (error 패턴 및 로그 길이 포함)"""
