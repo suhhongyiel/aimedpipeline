@@ -585,7 +585,9 @@ def render():
                     subject_selection = st.selectbox(
                         "Subject ID 선택",
                         options=[""] + available_subjects,
-                        help="처리할 Subject를 선택하세요"
+                        help="처리할 Subject를 선택하세요",
+                        key="subject_selectbox",
+                        on_change=lambda: st.session_state.pop("selected_session", None)  # Subject 변경 시 Session 초기화
                     )
                 else:
                     # 직접 입력
@@ -593,16 +595,129 @@ def render():
                         "Subject ID",
                         value="",
                         placeholder="예: sub-ADNI002S1155",
-                        help="처리할 Subject ID (전체 이름)"
+                        help="처리할 Subject ID (전체 이름)",
+                        key="subject_text_input",
+                        on_change=lambda: st.session_state.pop("selected_session", None)  # Subject 변경 시 Session 초기화
                     )
             
             with col2:
-                session_id = st.text_input(
-                    "Session ID (선택)",
-                    value="",
-                    placeholder="예: ses-01",
-                    help="특정 세션만 처리 (선택사항)"
-                )
+                # Session ID 드롭다운 (Subject 선택 시 자동 업데이트)
+                # session_state에 캐싱하여 불필요한 API 호출 방지
+                cache_key = f"sessions_{subject_selection}"
+                
+                if subject_selection and subject_selection != "":
+                    # 캐시된 Session 목록이 없거나 Subject가 변경된 경우에만 API 호출
+                    if cache_key not in st.session_state or st.session_state.get("last_subject") != subject_selection:
+                        available_sessions = []
+                        error_message = None
+                        try:
+                            bids_dir = st.session_state.get("bids_directory", "/app/data/bids")
+                            with st.spinner("Session 목록 로딩 중..."):
+                                resp = requests.get(
+                                    f"{FASTAPI_SERVER_URL}/get-sessions",
+                                    params={
+                                        "subject_id": subject_selection,
+                                        "bids_dir": bids_dir
+                                    },
+                                    timeout=5
+                                )
+                                if resp.status_code == 200:
+                                    result = resp.json()
+                                    if result.get("success") and result.get("sessions"):
+                                        available_sessions = result.get("sessions", [])
+                                        st.session_state[cache_key] = available_sessions
+                                        st.session_state["last_subject"] = subject_selection
+                                        st.session_state[f"{cache_key}_error"] = None
+                                    else:
+                                        # Session이 없거나 실패한 경우
+                                        error_message = result.get("message", "Session을 찾을 수 없습니다")
+                                        st.session_state[cache_key] = []
+                                        st.session_state["last_subject"] = subject_selection
+                                        st.session_state[f"{cache_key}_error"] = error_message
+                                else:
+                                    error_message = f"API 호출 실패 (상태 코드: {resp.status_code})"
+                                    st.session_state[cache_key] = []
+                                    st.session_state["last_subject"] = subject_selection
+                                    st.session_state[f"{cache_key}_error"] = error_message
+                        except requests.exceptions.ConnectionError:
+                            error_message = "Backend 서버에 연결할 수 없습니다"
+                            st.session_state[cache_key] = []
+                            st.session_state["last_subject"] = subject_selection
+                            st.session_state[f"{cache_key}_error"] = error_message
+                        except Exception as e:
+                            error_message = f"오류: {str(e)}"
+                            st.session_state[cache_key] = []
+                            st.session_state["last_subject"] = subject_selection
+                            st.session_state[f"{cache_key}_error"] = error_message
+                    else:
+                        # 캐시에서 가져오기
+                        available_sessions = st.session_state.get(cache_key, [])
+                        error_message = st.session_state.get(f"{cache_key}_error")
+                else:
+                    available_sessions = []
+                    error_message = None
+                
+                # 드롭다운 옵션 구성
+                session_display_options = ["전체 (자동 감지)"]
+                if available_sessions:
+                    session_display_options += [
+                        f"{s['display_name']} ({s['session_id']})" 
+                        for s in available_sessions
+                    ]
+                
+                # Session 선택 UI
+                if subject_selection and subject_selection != "":
+                    if available_sessions:
+                        # Session이 있는 경우 드롭다운 표시
+                        st.caption(f"✅ {len(available_sessions)}개 Session 발견")
+                        selected_session_display = st.selectbox(
+                            "Session ID 선택",
+                            options=session_display_options,
+                            help="처리할 Session을 선택하세요 (전체 선택 시 자동 감지)",
+                            key="session_selectbox",
+                            index=0  # 기본값: "전체 (자동 감지)"
+                        )
+                        
+                        # 선택된 값에서 실제 session_id 추출
+                        if selected_session_display == "전체 (자동 감지)":
+                            session_id = ""
+                        else:
+                            # "ses-M126 (M126)" 형식에서 session_id 추출
+                            for s in available_sessions:
+                                if f"{s['display_name']} ({s['session_id']})" == selected_session_display:
+                                    session_id = s['session_id']
+                                    break
+                            else:
+                                session_id = ""
+                    else:
+                        # Session이 없거나 에러가 발생한 경우
+                        if error_message:
+                            st.caption(f"⚠️ {error_message}")
+                            with st.expander("🔍 디버깅 정보", expanded=False):
+                                st.code(f"Subject: {subject_selection}\nBIDS Dir: {st.session_state.get('bids_directory', '/app/data/bids')}\nError: {error_message}")
+                        else:
+                            st.caption("ℹ️ Session이 없거나 자동 감지됩니다")
+                        
+                        session_id = st.text_input(
+                            "Session ID (선택)",
+                            value="",
+                            placeholder="예: M126 또는 ses-M126",
+                            help="특정 세션만 처리 (선택사항, 비워두면 자동 감지)",
+                            key="session_text_input"
+                        )
+                        # "ses-" 접두사 제거
+                        if session_id:
+                            session_id = session_id.replace("ses-", "").strip()
+                else:
+                    # Subject가 선택되지 않은 경우
+                    session_id = st.text_input(
+                        "Session ID (선택)",
+                        value="",
+                        placeholder="Subject를 먼저 선택하세요",
+                        help="Subject를 선택하면 Session 목록이 표시됩니다",
+                        key="session_text_input",
+                        disabled=True
+                    )
         
         # 선택된 프로세스 저장
         selected_processes = []

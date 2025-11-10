@@ -71,6 +71,10 @@ def build_docker_command(**context):
     
     # subject ID에서 "sub-" 제거
     sub_id = subject_id.replace("sub-", "")
+    
+    # session_id에서 "ses-" 접두사 제거 (사용자가 "ses-01" 형식으로 입력할 수 있음)
+    if session_id:
+        session_id = session_id.replace("ses-", "").strip()
 
     # --- flags 정리 유틸 ---
     def normalize_flags(tokens: list[str]) -> list[str]:
@@ -103,18 +107,32 @@ def build_docker_command(**context):
         return out
 
     sub_dirname = subject_id if subject_id.startswith("sub-") else f"sub-{subject_id}"
-    subject_path = Path(bids_dir) / sub_dirname
+    
     # Session 자동 감지 (session_id가 없을 때)
     if not session_id:
-        #subject_path = Path(bids_dir) / subject_id
+        # bids_dir가 호스트 경로인지 확인하고, 필요시 호스트 경로로 변환
+        # bids_dir가 /data/로 시작하면 호스트 경로로 변환
+        if bids_dir.startswith('/data/'):
+            # 컨테이너 경로를 호스트 경로로 변환
+            host_bids_dir = bids_dir.replace('/data/', f'{host_data_dir}/')
+        else:
+            # 이미 호스트 경로인 경우 그대로 사용
+            host_bids_dir = bids_dir
+        
+        subject_path = Path(host_bids_dir) / sub_dirname
+        print(f"Checking for sessions in: {subject_path}")
+        
         if subject_path.exists():
             session_dirs = [d.name.replace("ses-", "") for d in subject_path.iterdir()
                             if d.is_dir() and d.name.startswith("ses-")]
             if session_dirs:
                 session_id = session_dirs[0]   # 첫 번째 세션 자동 선택
-                print(f"Auto-detected session: {session_id}")
+                print(f"✅ Auto-detected session: {session_id}")
+            else:
+                print(f"⚠️ No session directories found in: {subject_path}")
         else:
-            print(f"Warning: Subject path not found: {subject_path}")
+            print(f"⚠️ Warning: Subject path not found: {subject_path}")
+            # 경로가 없으면 빈 session_id로 진행 (SINGLE session)
     
     # 컨테이너 이름
     container_name = f"{subject_id}"
@@ -171,7 +189,7 @@ def build_docker_command(**context):
         ]
         if session_id:
             cmd_parts.append(f"-ses {session_id}")
-        cmd_parts.appednd("-proc_structural")
+        cmd_parts.append("-proc_structural")
 
         if use_fs_licence_min:
             cmd_parts.append(f"-fs_licence {fs_licence}")
@@ -253,13 +271,16 @@ def log_completion(**context):
         "no such file", "killed", "segmentation fault",
         "failed", "permission denied"
     ]
-    #100번 기준으로 /home/admin1/Documents/aimedpipeline 이거로 바꾸긴 해야함
+    
+    # 호스트 데이터 디렉토리 (환경 변수에서 가져오기)
+    host_data_dir = os.getenv('HOST_DATA_DIR', '/home/admin1/Documents/aimedpipeline/data')
+    
     # 로그 경로 목록 (fin / error 디렉토리 모두 확인)
     log_dirs = [
-        Path("/home/admin1/Documents/aimedpipeline/data/derivatives/logs/proc_func/error"),
-        Path("/home/admin1/Documents/aimedpipeline/data/derivatives/logs/proc_func/fin"),
-        Path("/home/admin1/Documents/aimedpipeline/data/derivatives/logs/proc_structural/error"),
-        Path("/home/admin1/Documents/aimedpipeline/data/derivatives/logs/proc_structural/fin"),
+        Path(f"{host_data_dir}/derivatives/logs/proc_func/error"),
+        Path(f"{host_data_dir}/derivatives/logs/proc_func/fin"),
+        Path(f"{host_data_dir}/derivatives/logs/proc_structural/error"),
+        Path(f"{host_data_dir}/derivatives/logs/proc_structural/fin"),
     ]
 
     # 개별 로그 파일도 직접 추가 (XCom으로 전달된 파일)

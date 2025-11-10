@@ -28,7 +28,7 @@ from fastapi import Depends
 AIRFLOW_BASE = os.getenv("AIRFLOW_BASE_URL", "http://airflow:8080")
 #AIRFLOW_BASE = os.getenv("AIRFLOW_BASE_URL", "http://localhost:8080")
 AIRFLOW_API  = f"{AIRFLOW_BASE}/api/v1"
-AIRFLOW_DAG  = os.getenv("AIRFLOW_DAG_ID", "mri_pipeline")
+AIRFLOW_DAG  = os.getenv("AIRFLOW_DAG_ID", "mica_pipeline")
 AIRFLOW_USER = os.getenv("AIRFLOW_USER", "admin")
 AIRFLOW_PASS = os.getenv("AIRFLOW_PASSWORD", "admin")
 
@@ -236,7 +236,10 @@ async def list_files(path: str = "/app/workspace"):
             "count": len(files)
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.post("/create-file")
 async def create_file(data: dict):
@@ -267,7 +270,10 @@ async def create_file(data: dict):
             "message": f"File created: {file_path}"
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.delete("/delete-file")
 async def delete_file(file_path: str, work_dir: str = "/app/workspace"):
@@ -304,7 +310,10 @@ async def delete_file(file_path: str, work_dir: str = "/app/workspace"):
             "message": f"{item_type.capitalize()} deleted: {file_path}"
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.get("/read-file")
 async def read_file(file_path: str, work_dir: str = "/app/workspace"):
@@ -339,7 +348,10 @@ async def read_file(file_path: str, work_dir: str = "/app/workspace"):
             "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.post("/upload-file")
 async def upload_file(
@@ -430,7 +442,10 @@ async def upload_file(
         
         return response
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.post("/validate-bids")
 async def validate_bids(directory: str = "/app/data/bids"):
@@ -562,7 +577,96 @@ async def validate_bids(directory: str = "/app/data/bids"):
         
         return validation_result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
+
+@app.get("/get-sessions")
+async def get_sessions(subject_id: str, bids_dir: str = "/app/data/bids"):
+    """특정 Subject의 Session 목록을 가져옵니다."""
+    try:
+        # 호스트 데이터 디렉토리 확인
+        host_data_dir = os.getenv("HOST_DATA_DIR", "/home/admin1/Documents/aimedpipeline/data")
+        
+        # Subject 디렉토리 경로 구성
+        sub_dirname = subject_id if subject_id.startswith("sub-") else f"sub-{subject_id}"
+        
+        # 여러 경로 시도 (컨테이너 내부 경로 우선, 호스트 경로는 백업)
+        possible_paths = []
+        
+        # 1. 컨테이너 내부 경로 (마운트된 경로)
+        if bids_dir.startswith('/app/data/'):
+            possible_paths.append(Path(bids_dir) / sub_dirname)
+            possible_paths.append(Path(bids_dir) / subject_id)
+        
+        # 2. 직접 컨테이너 경로 시도
+        possible_paths.append(Path("/app/data/bids") / sub_dirname)
+        possible_paths.append(Path("/app/data/bids") / subject_id)
+        
+        # 3. 호스트 경로 (Backend가 호스트에서 실행 중인 경우)
+        possible_paths.append(Path(host_data_dir) / "bids" / sub_dirname)
+        possible_paths.append(Path(host_data_dir) / "bids" / subject_id)
+        
+        # 4. 상대 경로도 시도 (Backend가 프로젝트 루트에서 실행 중인 경우)
+        possible_paths.append(Path("./data/bids") / sub_dirname)
+        possible_paths.append(Path("./data/bids") / subject_id)
+        
+        found_path = None
+        for path in possible_paths:
+            try:
+                if path.exists():
+                    found_path = path
+                    break
+            except Exception:
+                continue
+        
+        if not found_path:
+            # 에러 메시지에 시도한 경로들 포함
+            tried_paths = [str(p) for p in possible_paths[:4]]  # 처음 4개만 표시
+            return {
+                "success": False,
+                "sessions": [],
+                "message": f"Subject directory not found. Tried: {', '.join(tried_paths)}"
+            }
+        
+        # Session 디렉토리 찾기
+        session_dirs = []
+        try:
+            for item in found_path.iterdir():
+                if item.is_dir() and item.name.startswith("ses-"):
+                    session_id = item.name.replace("ses-", "")
+                    session_dirs.append({
+                        "session_id": session_id,
+                        "display_name": item.name,  # ses-M126
+                        "full_name": item.name      # ses-M126
+                    })
+        except Exception as e:
+            return {
+                "success": False,
+                "sessions": [],
+                "message": f"Error reading directory {found_path}: {str(e)}"
+            }
+        
+        # Session ID로 정렬
+        session_dirs.sort(key=lambda x: x["session_id"])
+        
+        return {
+            "success": True,
+            "subject_id": subject_id,
+            "sessions": session_dirs,
+            "count": len(session_dirs),
+            "message": f"Found {len(session_dirs)} session(s) for {subject_id}",
+            "debug_path": str(found_path)  # 디버깅용
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "sessions": [],
+            "message": f"Error: {str(e)}",
+            "traceback": traceback.format_exc()
+        }
 
 async def run_mica_via_airflow(
     subject_id: str,
@@ -682,7 +786,7 @@ async def run_mica_pipeline(data: dict):
         user = data.get("user", "anonymous")
         
         # 호스트의 실제 데이터 경로 (환경 변수에서 가져오기)
-        host_data_dir = os.getenv("HOST_DATA_DIR", "/data")
+        host_data_dir = os.getenv("HOST_DATA_DIR", "/home/admin1/Documents/aimedpipeline/data")
         
         # 필수 파라미터 확인 (컨테이너 내부 경로)
         bids_dir = data.get("bids_dir", "./data/bids")
@@ -695,6 +799,9 @@ async def run_mica_pipeline(data: dict):
         
         # 추가 파라미터
         session_id = data.get("session_id", "")
+        # session_id에서 "ses-" 접두사 제거 (사용자가 "ses-01" 형식으로 입력할 수 있음)
+        if session_id:
+            session_id = session_id.replace("ses-", "").strip()
         fs_licence = data.get("fs_licence", "./home/admin1/Documents/aimedpipeline/data/license.txt")
         threads = data.get("threads", 4)
         freesurfer = data.get("freesurfer", True)
@@ -819,7 +926,13 @@ async def run_mica_pipeline(data: dict):
                     if session_id:
                         sessions_to_process = [session_id]
                     else:
-                        subject_path = Path(bids_dir) / sub
+                        # bids_dir가 컨테이너 경로인지 호스트 경로인지 확인
+                        if bids_dir.startswith('/app/data/'):
+                            check_bids_dir = bids_dir.replace('/app/data/', f'{host_data_dir}/')
+                        else:
+                            check_bids_dir = bids_dir
+                        
+                        subject_path = Path(check_bids_dir) / sub
                         if subject_path.exists():
                             session_dirs = [d.name.replace("ses-", "") for d in subject_path.iterdir() 
                                             if d.is_dir() and d.name.startswith("ses-")]
@@ -859,8 +972,8 @@ async def run_mica_pipeline(data: dict):
                                 f"-out {host_output_dir} "
                                 f"-sub {sub_id} "
                             )
-                            if actual_session:  # 또는 ses
-                                cmd += f"-ses {actual_session} "
+                            if ses:  # ses 변수 사용
+                                cmd += f"-ses {ses} "
 
                             cmd += "-proc_structural "
                             if use_fs_licence_min:
@@ -991,12 +1104,27 @@ async def run_mica_pipeline(data: dict):
             # 세션 자동 감지
             actual_session = session_id
             if not session_id:
-                subject_path = Path(bids_dir) / subject_id
+                # bids_dir가 컨테이너 경로인지 호스트 경로인지 확인
+                # 컨테이너 경로(/app/data)면 호스트 경로로 변환
+                if bids_dir.startswith('/app/data/'):
+                    check_bids_dir = bids_dir.replace('/app/data/', f'{host_data_dir}/')
+                else:
+                    # 이미 호스트 경로인 경우 그대로 사용
+                    check_bids_dir = bids_dir
+                
+                subject_path = Path(check_bids_dir) / subject_id
+                print(f"[Backend] Checking for sessions in: {subject_path}")
+                
                 if subject_path.exists():
                     session_dirs = [d.name.replace("ses-", "") for d in subject_path.iterdir() 
                                     if d.is_dir() and d.name.startswith("ses-")]
                     if session_dirs:
                         actual_session = session_dirs[0]
+                        print(f"[Backend] ✅ Auto-detected session: {actual_session}")
+                    else:
+                        print(f"[Backend] ⚠️ No session directories found in: {subject_path}")
+                else:
+                    print(f"[Backend] ⚠️ Warning: Subject path not found: {subject_path}")
             
             container_name = f"{subject_id}" + (f"_ses-{actual_session}" if actual_session else "")
             if processes:
@@ -1143,8 +1271,14 @@ async def run_mica_pipeline(data: dict):
             "error": f"Command timeout after {data.get('timeout', 3600)} seconds",
             "returncode": -1
         }
+    except HTTPException:
+        # HTTPException은 그대로 전달
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 
 @app.get("/mica-logs")
@@ -1197,7 +1331,10 @@ async def get_mica_logs(output_dir: str = "/app/data/derivatives"):
             "count": len(logs)
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.get("/mica-log-content")
 async def get_mica_log_content(log_file: str, lines: int = 100):
@@ -1229,7 +1366,10 @@ async def get_mica_log_content(log_file: str, lines: int = 100):
             "content": "".join(content_lines)
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.get("/mica-containers")
 async def get_mica_containers():
@@ -1262,7 +1402,10 @@ async def get_mica_containers():
             "count": len(containers)
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.post("/mica-container-stop")
 async def stop_mica_container(container_name: str):
@@ -1294,7 +1437,10 @@ async def stop_mica_container(container_name: str):
             "error": "Timeout while stopping container"
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.get("/mica-jobs")
 async def get_mica_jobs(status: str = None):
@@ -1418,7 +1564,10 @@ async def get_mica_jobs(status: str = None):
         finally:
             db.close()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.post("/mica-job-update")
 async def update_mica_job_status(data: dict):
@@ -1462,14 +1611,30 @@ async def update_mica_job_status(data: dict):
         finally:
             db.close()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 # --- 유틸: 데이터 루트 결정 (/app/data 기본) ---
 def pick_existing_data_root() -> Path:
-    root = Path(os.getenv("HOST_DATA_DIR", "/app/data"))
-    if not (root / "derivatives").exists():
-        raise HTTPException(status_code=404, detail=f"Derivatives not found: {root / 'derivatives'}")
-    return root
+    # 여러 경로 시도 (컨테이너 내부 경로 우선)
+    possible_roots = [
+        Path("/app/data"),  # 컨테이너 내부 경로 (마운트됨)
+        Path(os.getenv("HOST_DATA_DIR", "/home/admin1/Documents/aimedpipeline/data")),  # 호스트 경로
+    ]
+    
+    for root in possible_roots:
+        derivatives_path = root / "derivatives"
+        if derivatives_path.exists():
+            return root
+    
+    # 모든 경로가 실패한 경우
+    tried_paths = [str(r / "derivatives") for r in possible_roots]
+    raise HTTPException(
+        status_code=404, 
+        detail=f"Derivatives not found. Tried: {', '.join(tried_paths)}"
+    )
 
 # --- 보안용: derivatives 바깥 접근 방지 ---
 def _ensure_inside(root: Path, target: Path) -> Path:
