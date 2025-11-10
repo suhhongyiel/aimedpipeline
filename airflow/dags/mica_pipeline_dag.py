@@ -66,6 +66,12 @@ def build_docker_command(**context):
     threads = conf.get('threads', 4)
     freesurfer = conf.get('freesurfer', True)
 
+    # 디버깅: conf에서 받은 값 확인
+    print(f"🔍 DEBUG - Received from Airflow conf:")
+    print(f"  subject_id: {subject_id}")
+    print(f"  session_id (raw): '{session_id}' (type: {type(session_id)})")
+    print(f"  processes: {processes}")
+
     # ✅ proc_structural 단독 여부
     simple_structural = (processes == ['proc_structural'])
     
@@ -73,8 +79,12 @@ def build_docker_command(**context):
     sub_id = subject_id.replace("sub-", "")
     
     # session_id에서 "ses-" 접두사 제거 (사용자가 "ses-01" 형식으로 입력할 수 있음)
+    original_session_id = session_id
     if session_id:
         session_id = session_id.replace("ses-", "").strip()
+        print(f"🔍 DEBUG - session_id after processing: '{session_id}' (original: '{original_session_id}')")
+    else:
+        print(f"🔍 DEBUG - session_id is empty or falsy: '{session_id}'")
 
     # --- flags 정리 유틸 ---
     def normalize_flags(tokens: list[str]) -> list[str]:
@@ -108,31 +118,13 @@ def build_docker_command(**context):
 
     sub_dirname = subject_id if subject_id.startswith("sub-") else f"sub-{subject_id}"
     
-    # Session 자동 감지 (session_id가 없을 때)
+    # Session 자동 감지 (session_id가 없을 때 = 전체 세션 처리)
+    # session_id가 빈 문자열이면 -ses 옵션을 추가하지 않아 전체 세션이 처리됨
+    # 따라서 여기서는 session_id를 설정하지 않고 그대로 빈 문자열로 유지
     if not session_id:
-        # bids_dir가 호스트 경로인지 확인하고, 필요시 호스트 경로로 변환
-        # bids_dir가 /data/로 시작하면 호스트 경로로 변환
-        if bids_dir.startswith('/data/'):
-            # 컨테이너 경로를 호스트 경로로 변환
-            host_bids_dir = bids_dir.replace('/data/', f'{host_data_dir}/')
-        else:
-            # 이미 호스트 경로인 경우 그대로 사용
-            host_bids_dir = bids_dir
-        
-        subject_path = Path(host_bids_dir) / sub_dirname
-        print(f"Checking for sessions in: {subject_path}")
-        
-        if subject_path.exists():
-            session_dirs = [d.name.replace("ses-", "") for d in subject_path.iterdir()
-                            if d.is_dir() and d.name.startswith("ses-")]
-            if session_dirs:
-                session_id = session_dirs[0]   # 첫 번째 세션 자동 선택
-                print(f"✅ Auto-detected session: {session_id}")
-            else:
-                print(f"⚠️ No session directories found in: {subject_path}")
-        else:
-            print(f"⚠️ Warning: Subject path not found: {subject_path}")
-            # 경로가 없으면 빈 session_id로 진행 (SINGLE session)
+        print(f"ℹ️ No session_id specified - will process all sessions for {subject_id}")
+        # session_id를 빈 문자열로 유지하여 전체 세션 처리
+        # micapipe는 -ses 옵션이 없으면 자동으로 모든 세션을 처리함
     
     # 컨테이너 이름
     container_name = f"{subject_id}"
@@ -189,6 +181,9 @@ def build_docker_command(**context):
         ]
         if session_id:
             cmd_parts.append(f"-ses {session_id}")
+            print(f"✅ DEBUG (simple_structural) - Added -ses {session_id} to command")
+        else:
+            print(f"⚠️ DEBUG (simple_structural) - session_id is empty, NOT adding -ses option")
         cmd_parts.append("-proc_structural")
 
         if use_fs_licence_min:
@@ -211,6 +206,9 @@ def build_docker_command(**context):
         ]
         if session_id:
             cmd_parts.append(f"-ses {session_id}")
+            print(f"✅ DEBUG (general) - Added -ses {session_id} to command")
+        else:
+            print(f"⚠️ DEBUG (general) - session_id is empty, NOT adding -ses option")
 
         cmd_parts += [
             f"-threads {threads}",

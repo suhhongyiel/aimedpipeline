@@ -7,6 +7,7 @@ import requests
 import os
 import time
 from datetime import datetime
+from requests.exceptions import Timeout, ConnectionError
 
 # FastAPI 서버 주소
 FASTAPI_SERVER_URL = os.getenv(
@@ -14,16 +15,41 @@ FASTAPI_SERVER_URL = os.getenv(
     st.secrets.get("api", {}).get("fastapi_base_url", "http://localhost:8000")
 )
 
-def fetch_mica_jobs():
-    """MICA Pipeline Job 목록을 가져옵니다."""
+def fetch_mica_jobs(user: str = None):
+    """MICA Pipeline Job 목록을 가져옵니다. (로그인한 사용자만)"""
     try:
-        response = requests.get(f"{FASTAPI_SERVER_URL}/mica-jobs", timeout=10)
+        params = {}
+        if user:
+            params["user"] = user
+        # 타임아웃을 30초로 증가 (상태 확인에 시간이 걸릴 수 있음)
+        response = requests.get(f"{FASTAPI_SERVER_URL}/mica-jobs", params=params, timeout=30)
         if response.status_code == 200:
-            return response.json()
+            result = response.json()
+            if result is None:
+                return {"success": False, "jobs": [], "summary": {"processing": 0, "completed": 0, "failed": 0}}
+            return result
         return {"success": False, "jobs": [], "summary": {"processing": 0, "completed": 0, "failed": 0}}
+    except requests.exceptions.Timeout:
+        return {
+            "success": False, 
+            "jobs": [], 
+            "summary": {"processing": 0, "completed": 0, "failed": 0},
+            "error": "요청 시간 초과 (30초). 서버가 처리 중일 수 있습니다. 잠시 후 다시 시도해주세요."
+        }
+    except requests.exceptions.ConnectionError:
+        return {
+            "success": False, 
+            "jobs": [], 
+            "summary": {"processing": 0, "completed": 0, "failed": 0},
+            "error": "백엔드 서버에 연결할 수 없습니다. 서버가 실행 중인지 확인해주세요."
+        }
     except Exception as e:
-        st.error(f"❌ Failed to fetch MICA jobs: {str(e)}")
-        return {"success": False, "jobs": [], "summary": {"processing": 0, "completed": 0, "failed": 0}}
+        return {
+            "success": False, 
+            "jobs": [], 
+            "summary": {"processing": 0, "completed": 0, "failed": 0},
+            "error": f"오류 발생: {str(e)}"
+        }
 
 def format_duration(seconds):
     """시간을 읽기 쉬운 형식으로 변환"""
@@ -53,17 +79,63 @@ def render():
     # 자동 새로고침 설정 (30초마다)
     if 'last_refresh' not in st.session_state:
         st.session_state.last_refresh = time.time()
+    if 'auto_refresh_enabled' not in st.session_state:
+        st.session_state.auto_refresh_enabled = True
     
-    # 30초가 지나면 자동 새로고침
-    if time.time() - st.session_state.last_refresh > 30:
-        st.session_state.last_refresh = time.time()
-        st.rerun()
+    # 자동 새로고침 체크박스
+    auto_refresh_enabled = st.checkbox("🔄 자동 새로고침 (30초)", value=st.session_state.auto_refresh_enabled, key="auto_refresh_checkbox")
+    st.session_state.auto_refresh_enabled = auto_refresh_enabled
     
-    # MICA Pipeline Job 데이터 가져오기 (캐시 방지)
-    jobs_response = fetch_mica_jobs()
+    # 로그인한 사용자 정보 가져오기
+    current_user = st.session_state.get("username", "anonymous")
+    
+    # 시스템 리소스 정보 가져오기 (에러가 발생해도 계속 진행)
+    try:
+        resources_response = requests.get(f"{FASTAPI_SERVER_URL}/system-resources", timeout=10)
+        if resources_response.status_code == 200:
+            resources = resources_response.json()
+            if resources and isinstance(resources, dict) and resources.get("success"):
+                cpu_info = resources.get("cpu", {})
+                memory_info = resources.get("memory", {})
+                disk_info = resources.get("disk", {})
+                docker_info = resources.get("docker", {})
+                
+                if cpu_info and memory_info and disk_info and docker_info:
+                    st.markdown("### 💻 시스템 리소스")
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("CPU 사용률", f"{cpu_info.get('percent', 0)}%")
+                    with col2:
+                        st.metric("메모리 사용률", f"{memory_info.get('percent', 0)}%", 
+                                 f"{memory_info.get('used_gb', 0):.1f}GB / {memory_info.get('total_gb', 0):.1f}GB")
+                    with col3:
+                        st.metric("디스크 사용률", f"{disk_info.get('percent', 0)}%",
+                                 f"{disk_info.get('used_gb', 0):.1f}GB / {disk_info.get('total_gb', 0):.1f}GB")
+                    with col4:
+                        st.metric("실행 중인 컨테이너", docker_info.get('mica_containers', 0),
+                                 f"전체: {docker_info.get('total_containers', 0)}")
+                    st.markdown("---")
+    except requests.exceptions.Timeout:
+        # 타임아웃은 조용히 무시 (시스템 리소스는 선택적 정보)
+        pass
+    except Exception as e:
+        # 에러는 조용히 무시 (시스템 리소스는 선택적 정보)
+        pass
+    
+    # MICA Pipeline Job 데이터 가져오기 (로그인한 사용자만)
+    with st.spinner("MICA Pipeline 작업 목록을 불러오는 중..."):
+        jobs_response = fetch_mica_jobs(user=current_user)
     
     if not jobs_response.get("success"):
-        st.warning("⚠️ Failed to load MICA Pipeline jobs")
+        error_msg = jobs_response.get("error", "작업 목록을 불러올 수 없습니다.")
+        st.error(f"❌ {error_msg}")
+        
+        # 재시도 버튼 제공
+        if st.button("🔄 다시 시도", key="retry_fetch_jobs"):
+            st.rerun()
+        
+        # 빈 상태로 계속 진행 (에러 메시지만 표시)
+        st.info("💡 작업 목록을 불러올 수 없어도 다른 기능은 사용할 수 있습니다.")
         return
     
     jobs = jobs_response.get("jobs", [])
@@ -87,14 +159,25 @@ def render():
     
     st.markdown("---")
     
-    # 새로고침 버튼
+    # 새로고침 버튼 및 자동 새로고침 상태 표시 (중복 제거)
     col_refresh, col_auto = st.columns([1, 3])
     with col_refresh:
         if st.button("🔄 새로고침", key="refresh_results"):
             st.session_state.last_refresh = time.time()  # 타임스탬프 리셋
             st.rerun()
+    
     with col_auto:
-        st.caption(f"⏱️ 자동 새로고침: {int(30 - (time.time() - st.session_state.last_refresh))}초 후")
+        if auto_refresh_enabled:
+            elapsed = time.time() - st.session_state.last_refresh
+            remaining = max(0, int(30 - elapsed))
+            if remaining > 0:
+                st.caption(f"⏱️ 자동 새로고침: {remaining}초 후")
+            else:
+                # 30초가 지났으면 자동 새로고침
+                st.session_state.last_refresh = time.time()
+                st.rerun()
+        else:
+            st.caption("⏸️ 자동 새로고침 비활성화됨")
     
     # 필터링 옵션
     st.markdown("### 🔍 Filter Jobs")

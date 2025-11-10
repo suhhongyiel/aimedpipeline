@@ -13,8 +13,11 @@ import json
 from typing import List
 import zipfile
 import tarfile
+import time
 # tokenize for shell command 안전 처리
 import shlex
+# 시스템 리소스 모니터링
+from system_resources import get_system_resources
 # db 관련
 # --- DB 관련 import 수정 ---
 from database import SessionLocal
@@ -362,10 +365,17 @@ async def upload_file(
     """
     파일을 서버에 업로드합니다.
     압축 파일(.zip, .tar.gz, .tgz)은 자동으로 압축 해제할 수 있습니다.
+    사용자별 경로를 지원합니다.
     """
     try:
-        # 목적지 디렉토리 생성
+        # 목적지 디렉토리 생성 (사용자별 경로 자동 생성)
         dest_path = Path(destination)
+        
+        # 사용자별 경로인 경우 (예: /app/data/{username}/bids) 상위 디렉토리도 생성
+        if "/data/" in str(dest_path) and dest_path.parts[-1] in ["bids", "derivatives"]:
+            # 상위 디렉토리(사용자 디렉토리)도 생성
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+        
         dest_path.mkdir(parents=True, exist_ok=True)
         
         uploaded_files = []
@@ -449,7 +459,7 @@ async def upload_file(
 
 @app.post("/validate-bids")
 async def validate_bids(directory: str = "/app/data/bids"):
-    """BIDS 포맷 검증을 수행합니다."""
+    """BIDS 포맷 검증을 수행합니다. (성능 최적화)"""
     try:
         dir_path = Path(directory)
         
@@ -476,14 +486,21 @@ async def validate_bids(directory: str = "/app/data/bids"):
             "participants.tsv": False
         }
         
-        # 디렉토리 구조 분석
+        # 디렉토리 구조 분석 (성능 최적화: 한 번만 순회)
         all_items = []
         subject_dirs = []
+        max_subjects_to_check = 100  # 최대 100개 subject만 상세 확인
         
-        for item in dir_path.iterdir():
+        try:
+            items = list(dir_path.iterdir())
+        except PermissionError:
+            raise HTTPException(status_code=403, detail=f"Permission denied: {directory}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error reading directory: {str(e)}")
+        
+        for item in items:
             # 시스템 폴더/파일 무시
             if item.name in ignore_list:
-                validation_result["warnings"].append(f"Ignored system file/folder: {item.name}")
                 continue
             
             all_items.append(item.name)
@@ -496,12 +513,17 @@ async def validate_bids(directory: str = "/app/data/bids"):
                 subject_dirs.append(item.name)
                 validation_result["structure"][item.name] = "subject_directory"
                 
-                # Subject 폴더 내부 확인
-                sub_folders = [f.name for f in item.iterdir() if f.is_dir() and f.name not in ignore_list]
-                if sub_folders:
-                    validation_result["details"].append(f"✓ {item.name}/ → {', '.join(sub_folders)}")
-                else:
-                    validation_result["warnings"].append(f"{item.name} folder is empty")
+                # Subject 폴더 내부 확인 (최대 100개까지만 상세 확인)
+                if len(subject_dirs) <= max_subjects_to_check:
+                    try:
+                        # 빠른 확인: 첫 번째 디렉토리만 확인
+                        sub_items = list(item.iterdir())
+                        sub_folders = [f.name for f in sub_items[:5] if f.is_dir() and f.name not in ignore_list]  # 최대 5개만 확인
+                        if sub_folders:
+                            validation_result["details"].append(f"✓ {item.name}/ → {', '.join(sub_folders[:3])}{'...' if len(sub_folders) > 3 else ''}")
+                    except Exception:
+                        # 접근 권한 문제 등은 무시하고 계속 진행
+                        pass
         
         # 필수 항목 검사
         missing_items = [k for k, v in required_items.items() if not v]
@@ -519,53 +541,64 @@ async def validate_bids(directory: str = "/app/data/bids"):
             validation_result["errors"].append("No subject directories found (sub-*)")
         else:
             validation_result["details"].append(f"✓ Found {len(subject_dirs)} subject(s)")
+            if len(subject_dirs) > max_subjects_to_check:
+                validation_result["warnings"].append(f"Large dataset: {len(subject_dirs)} subjects found. Only first {max_subjects_to_check} were checked in detail.")
         
-        # dataset_description.json 검증
+        # dataset_description.json 검증 (빠른 읽기)
         desc_file = dir_path / "dataset_description.json"
         if desc_file.exists():
             try:
-                with desc_file.open("r", encoding="utf-8") as f:
-                    desc_data = json.load(f)
-                    required_fields = ["Name", "BIDSVersion"]
-                    missing_fields = [f for f in required_fields if f not in desc_data]
-                    
-                    if missing_fields:
-                        validation_result["errors"].append(
-                            f"dataset_description.json missing fields: {', '.join(missing_fields)}"
-                        )
-                    else:
-                        validation_result["dataset_info"] = {
-                            "name": desc_data.get("Name"),
-                            "version": desc_data.get("BIDSVersion"),
-                            "dataset_type": desc_data.get("DatasetType", "unknown")
-                        }
-                        validation_result["details"].append(
-                            f"✓ Dataset: {desc_data.get('Name')} (BIDS {desc_data.get('BIDSVersion')})"
-                        )
+                # 파일 크기 제한 (10MB)
+                if desc_file.stat().st_size > 10 * 1024 * 1024:
+                    validation_result["errors"].append("dataset_description.json is too large (>10MB)")
+                else:
+                    with desc_file.open("r", encoding="utf-8") as f:
+                        desc_data = json.load(f)
+                        required_fields = ["Name", "BIDSVersion"]
+                        missing_fields = [f for f in required_fields if f not in desc_data]
+                        
+                        if missing_fields:
+                            validation_result["errors"].append(
+                                f"dataset_description.json missing fields: {', '.join(missing_fields)}"
+                            )
+                        else:
+                            validation_result["dataset_info"] = {
+                                "name": desc_data.get("Name"),
+                                "version": desc_data.get("BIDSVersion"),
+                                "dataset_type": desc_data.get("DatasetType", "unknown")
+                            }
+                            validation_result["details"].append(
+                                f"✓ Dataset: {desc_data.get('Name')} (BIDS {desc_data.get('BIDSVersion')})"
+                            )
             except json.JSONDecodeError as e:
                 validation_result["errors"].append(f"dataset_description.json is not valid JSON: {str(e)}")
             except Exception as e:
                 validation_result["errors"].append(f"Error reading dataset_description.json: {str(e)}")
         
-        # README 파일 확인
+        # README 파일 확인 (빠른 확인)
         readme_file = dir_path / "README"
         if readme_file.exists():
             try:
                 readme_size = readme_file.stat().st_size
                 validation_result["details"].append(f"✓ README ({readme_size} bytes)")
-            except:
+            except Exception:
                 pass
         
-        # participants.tsv 확인
+        # participants.tsv 확인 (빠른 확인: 첫 100줄만)
         participants_file = dir_path / "participants.tsv"
         if participants_file.exists():
             try:
-                with participants_file.open("r", encoding="utf-8") as f:
-                    lines = f.readlines()
-                    validation_result["details"].append(f"✓ participants.tsv ({len(lines)} lines)")
-                    validation_result["participants_count"] = len(lines) - 1  # 헤더 제외
-            except:
-                pass
+                # 파일 크기 제한 (100MB)
+                if participants_file.stat().st_size > 100 * 1024 * 1024:
+                    validation_result["warnings"].append("participants.tsv is very large (>100MB), counting may be slow")
+                    validation_result["participants_count"] = "unknown"
+                else:
+                    with participants_file.open("r", encoding="utf-8") as f:
+                        lines = f.readlines()[:1000]  # 최대 1000줄만 읽기
+                        validation_result["details"].append(f"✓ participants.tsv ({len(lines)} lines checked)")
+                        validation_result["participants_count"] = len(lines) - 1 if len(lines) > 0 else 0  # 헤더 제외
+            except Exception as e:
+                validation_result["warnings"].append(f"Could not read participants.tsv: {str(e)}")
         
         # 최종 검증 결과
         if not validation_result["errors"]:
@@ -576,11 +609,13 @@ async def validate_bids(directory: str = "/app/data/bids"):
             validation_result["message"] = f"❌ Invalid BIDS dataset ({len(validation_result['errors'])} error(s))"
         
         return validation_result
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
-        print(f"ERROR in /run-mica-pipeline: {error_detail}")
-        raise HTTPException(status_code=500, detail=error_detail)
+        print(f"ERROR in /validate-bids: {error_detail}")
+        raise HTTPException(status_code=500, detail=f"BIDS validation error: {str(e)}")
 
 @app.get("/get-sessions")
 async def get_sessions(subject_id: str, bids_dir: str = "/app/data/bids"):
@@ -690,6 +725,9 @@ async def run_mica_via_airflow(
         # DAG Run ID 생성
         run_id = f"mica_{subject_id.replace('sub-', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
+        # 디버깅: Airflow로 전달할 session_id 확인
+        print(f"🔍 DEBUG (run_mica_via_airflow) - session_id: '{session_id}' (type: {type(session_id)})")
+        
         # Airflow API 페이로드
         payload = {
             "dag_run_id": run_id,
@@ -742,7 +780,8 @@ async def run_mica_via_airflow(
                     status="processing",
                     progress=0.0,
                     log_file=f"{output_dir}/logs/{processes[0]}/fin/{container_name}.log",
-                    error_log_file=f"{output_dir}/logs/{processes[0]}/error/{container_name}_error.log"
+                    error_log_file=f"{output_dir}/logs/{processes[0]}/error/{container_name}_error.log",
+                    user=user  # 사용자 정보 추가
                 )
                 session.add(mica_job)
                 session.commit()
@@ -786,11 +825,13 @@ async def run_mica_pipeline(data: dict):
         user = data.get("user", "anonymous")
         
         # 호스트의 실제 데이터 경로 (환경 변수에서 가져오기)
-        host_data_dir = os.getenv("HOST_DATA_DIR", "/home/admin1/Documents/aimedpipeline/data")
+        base_host_data_dir = os.getenv("HOST_DATA_DIR", "/home/admin1/Documents/aimedpipeline/data")
+        # 사용자별 경로 생성
+        host_data_dir = os.path.join(base_host_data_dir, user)
         
         # 필수 파라미터 확인 (컨테이너 내부 경로)
-        bids_dir = data.get("bids_dir", "./data/bids")
-        output_dir = data.get("output_dir", "./data/derivatives")
+        bids_dir = data.get("bids_dir", f"./data/{user}/bids")
+        output_dir = data.get("output_dir", f"./data/{user}/derivatives")
         subject_id = data.get("subject_id")
         processes = data.get("processes", [])
 
@@ -802,7 +843,7 @@ async def run_mica_pipeline(data: dict):
         # session_id에서 "ses-" 접두사 제거 (사용자가 "ses-01" 형식으로 입력할 수 있음)
         if session_id:
             session_id = session_id.replace("ses-", "").strip()
-        fs_licence = data.get("fs_licence", "./home/admin1/Documents/aimedpipeline/data/license.txt")
+        fs_licence = data.get("fs_licence", "/app/data/license.txt")
         threads = data.get("threads", 4)
         freesurfer = data.get("freesurfer", True)
     
@@ -879,18 +920,138 @@ async def run_mica_pipeline(data: dict):
         if not processes:
             raise HTTPException(status_code=400, detail="At least one process must be selected")
         
+        # 사용자별 디렉토리 생성 (호스트 경로)
+        Path(host_data_dir).mkdir(parents=True, exist_ok=True)
+        Path(host_data_dir + "/bids").mkdir(parents=True, exist_ok=True)
+        Path(host_data_dir + "/derivatives").mkdir(parents=True, exist_ok=True)
+        
         # 출력 디렉토리 생성 (컨테이너 내부 경로)
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         
         # Airflow로 넘기는 경우는 기존 그대로 유지
         if use_airflow:
+            # 라이센스 경로 변환 (공통 경로 사용)
+            # fs_licence가 /app/data로 시작하면 호스트 경로로 변환
+            if fs_licence.startswith("/app/data/"):
+                # /app/data/license.txt -> /home/admin1/Documents/aimedpipeline/data/license.txt
+                fs_licence_host = fs_licence.replace("/app/data", base_host_data_dir)
+            elif fs_licence.startswith("/app/"):
+                # 다른 /app 경로도 변환
+                fs_licence_host = fs_licence.replace("/app", base_host_data_dir.replace("/data", ""))
+            else:
+                # 이미 호스트 경로인 경우 그대로 사용
+                fs_licence_host = fs_licence
+            
+            # 디버깅: session_id 확인
+            print(f"🔍 DEBUG (backend) - session_id before sending to Airflow: '{session_id}' (type: {type(session_id)})")
+            print(f"🔍 DEBUG (backend) - host_data_dir: {host_data_dir}")
+            print(f"🔍 DEBUG (backend) - subject_id: {subject_id}")
+            print(f"🔍 DEBUG (backend) - use_airflow: {use_airflow}")
+            
+            # session_id가 빈 문자열이면 모든 세션에 대해 별도 작업 생성
+            if not session_id or session_id == "":
+                print(f"🔍 DEBUG - session_id is empty, attempting to detect sessions...")
+                # 세션 목록 가져오기
+                try:
+                    # 사용자별 경로 사용
+                    # 컨테이너 내부 경로와 호스트 경로 모두 시도
+                    bids_path_host = Path(host_data_dir) / "bids"
+                    bids_path_container = Path("/app/data") / user / "bids"
+                    
+                    sub_dirname = subject_id if subject_id.startswith("sub-") else f"sub-{subject_id}"
+                    subject_path_host = bids_path_host / sub_dirname
+                    subject_path_container = bids_path_container / sub_dirname
+                    
+                    print(f"🔍 DEBUG - Checking for sessions:")
+                    print(f"  Host path: {subject_path_host} (exists: {subject_path_host.exists()})")
+                    print(f"  Container path: {subject_path_container} (exists: {subject_path_container.exists()})")
+                    
+                    # 호스트 경로 또는 컨테이너 경로 중 존재하는 것 사용
+                    subject_path = None
+                    if subject_path_host.exists():
+                        subject_path = subject_path_host
+                        print(f"✅ Using host path: {subject_path}")
+                    elif subject_path_container.exists():
+                        subject_path = subject_path_container
+                        print(f"✅ Using container path: {subject_path}")
+                    
+                    if not subject_path:
+                        print(f"⚠️ Neither path exists, trying to find subject directory...")
+                        # 추가 경로 시도
+                        possible_paths = [
+                            Path(host_data_dir) / "bids" / sub_dirname,
+                            Path("/app/data") / user / "bids" / sub_dirname,
+                            Path("/app/data/bids") / sub_dirname,
+                            Path(host_data_dir.replace("/data", "")) / "data" / user / "bids" / sub_dirname,
+                        ]
+                        for path in possible_paths:
+                            if path.exists():
+                                subject_path = path
+                                print(f"✅ Found subject at: {subject_path}")
+                                break
+                    
+                    if subject_path and subject_path.exists():
+                        # 디렉토리 내용 확인
+                        all_items = list(subject_path.iterdir())
+                        print(f"🔍 DEBUG - Items in subject directory: {[item.name for item in all_items]}")
+                        
+                        session_dirs = [d.name.replace("ses-", "") for d in subject_path.iterdir()
+                                      if d.is_dir() and d.name.startswith("ses-")]
+                        
+                        print(f"🔍 DEBUG - Found sessions: {session_dirs}")
+                        
+                        if session_dirs:
+                            print(f"🔍 Found {len(session_dirs)} sessions: {session_dirs}")
+                            # 각 세션에 대해 별도의 Airflow DAG Run 생성
+                            results = []
+                            for ses in session_dirs:
+                                print(f"🚀 Creating DAG Run for session: {ses}")
+                                result = await run_mica_via_airflow(
+                                    subject_id=subject_id,
+                                    session_id=ses,  # 각 세션에 대해 별도 실행
+                                    processes=processes,
+                                    bids_dir=host_data_dir + "/bids",
+                                    output_dir=host_data_dir + "/derivatives",
+                                    fs_licence=fs_licence_host,
+                                    threads=threads,
+                                    freesurfer=freesurfer,
+                                    user=user,
+                                    proc_structural_flags=proc_structural_flags,
+                                    proc_surf_flags=proc_surf_flags,
+                                    post_structural_flags=post_structural_flags,
+                                    proc_func_flags=proc_func_flags,
+                                    dwi_flags=dwi_flags,
+                                    sc_flags=sc_flags,
+                                )
+                                results.append(result)
+                            
+                            # 첫 번째 결과를 반환하되, 모든 세션이 실행 중임을 표시
+                            if results:
+                                first_result = results[0]
+                                first_result["message"] = f"✅ MICA Pipeline이 {len(session_dirs)}개 세션에 대해 시작되었습니다.\n\n" + \
+                                                          f"실행 중인 세션: {', '.join(session_dirs)}\n" + \
+                                                          f"각 세션은 Airflow에서 순차적으로 처리됩니다."
+                                first_result["sessions"] = session_dirs
+                                first_result["total_sessions"] = len(session_dirs)
+                                return first_result
+                        else:
+                            print(f"⚠️ No sessions found for {subject_id}, running with empty session_id")
+                    else:
+                        print(f"⚠️ Subject path not found: {subject_path}, running with empty session_id")
+                except Exception as e:
+                    print(f"⚠️ Error detecting sessions: {e}, running with empty session_id")
+                    import traceback
+                    traceback.print_exc()
+            
+            # session_id가 있거나 세션을 찾지 못한 경우 기존 로직 사용
+            print(f"⚠️ DEBUG - Falling back to single DAG Run with session_id: '{session_id}'")
             return await run_mica_via_airflow(
                 subject_id=subject_id,
-                session_id=session_id,
+                session_id=session_id if session_id else "",  # 빈 문자열이면 전체 세션 처리 (Airflow에서 자동 감지)
                 processes=processes,
                 bids_dir=host_data_dir + "/bids",
                 output_dir=host_data_dir + "/derivatives",
-                fs_licence=host_data_dir + "/license.txt",
+                fs_licence=fs_licence_host,
                 threads=threads,
                 freesurfer=freesurfer,
                 user=user,
@@ -1409,7 +1570,7 @@ async def get_mica_containers():
 
 @app.post("/mica-container-stop")
 async def stop_mica_container(container_name: str):
-    """micapipe 컨테이너를 종료합니다."""
+    """micapipe 컨테이너를 종료하고 상태를 업데이트합니다."""
     try:
         # 보안: sub- 로 시작하는 컨테이너만 종료 가능
         if not container_name.startswith("sub-"):
@@ -1423,6 +1584,28 @@ async def stop_mica_container(container_name: str):
             text=True,
             timeout=30
         )
+        
+        # 컨테이너 중지 성공 시 DB 상태 업데이트
+        if result.returncode == 0:
+            db = SessionLocal()
+            try:
+                # 해당 컨테이너 이름으로 job 찾기
+                job = db.query(MicaPipelineJob).filter(
+                    MicaPipelineJob.container_name == container_name,
+                    MicaPipelineJob.status == "processing"
+                ).first()
+                
+                if job:
+                    job.status = "failed"
+                    job.completed_at = datetime.utcnow()
+                    job.progress = 100.0
+                    job.error_message = f"Container stopped by user: {container_name}"
+                    db.commit()
+                    print(f"✅ Updated job status for stopped container: {container_name}")
+            except Exception as e:
+                print(f"⚠️ Failed to update job status: {e}")
+            finally:
+                db.close()
         
         return {
             "success": result.returncode == 0,
@@ -1439,16 +1622,20 @@ async def stop_mica_container(container_name: str):
     except Exception as e:
         import traceback
         error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
-        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        print(f"ERROR in /mica-container-stop: {error_detail}")
         raise HTTPException(status_code=500, detail=error_detail)
 
 @app.get("/mica-jobs")
-async def get_mica_jobs(status: str = None):
-    """MICA Pipeline Job 목록을 조회합니다."""
+async def get_mica_jobs(status: str = None, user: str = None):
+    """MICA Pipeline Job 목록을 조회합니다. (사용자별 필터링 지원)"""
     try:
         db = SessionLocal()
         try:
             query = db.query(MicaPipelineJob)
+            
+            # 사용자별 필터링 (user 파라미터가 제공된 경우)
+            if user:
+                query = query.filter(MicaPipelineJob.user == user)
             
             # 상태 필터링
             if status:
@@ -1456,47 +1643,142 @@ async def get_mica_jobs(status: str = None):
             
             jobs = query.order_by(MicaPipelineJob.started_at.desc()).all()
             
+            # Airflow에서 모든 최근 DAG Run 확인하여 누락된 실패 job 찾기
+            try:
+                # 최근 100개의 DAG Run 확인
+                airflow_dag_runs_response = requests.get(
+                    f"{AIRFLOW_API}/dags/mica_pipeline/dagRuns",
+                    params={"limit": 100, "order_by": "-start_date"},
+                    auth=_auth(),
+                    timeout=10
+                )
+                if airflow_dag_runs_response.status_code == 200:
+                    airflow_dag_runs = airflow_dag_runs_response.json().get("dag_runs", [])
+                    # DB에 있는 job_id 목록
+                    db_job_ids = {job.job_id for job in jobs if job.job_id.startswith("mica_")}
+                    
+                    # Airflow에는 있지만 DB에 없거나 상태가 다른 경우 업데이트
+                    for dag_run in airflow_dag_runs:
+                        dag_run_id = dag_run.get("dag_run_id")
+                        dag_run_state = dag_run.get("state")
+                        
+                        if dag_run_id.startswith("mica_") and dag_run_state in ["success", "failed"]:
+                            # DB에서 해당 job 찾기
+                            db_job = next((j for j in jobs if j.job_id == dag_run_id), None)
+                            if db_job:
+                                # 상태가 다르면 업데이트
+                                if db_job.status == "processing" and dag_run_state in ["success", "failed"]:
+                                    db_job.status = "completed" if dag_run_state == "success" else "failed"
+                                    db_job.completed_at = datetime.utcnow()
+                                    db_job.progress = 100.0
+                                    if dag_run_state == "failed":
+                                        db_job.error_message = "Airflow DAG execution failed. Check Airflow UI for details."
+                                    db.commit()
+                                    print(f"✅ Synced job {dag_run_id} status from Airflow: {dag_run_state}")
+            except Exception as e:
+                print(f"Failed to sync Airflow DAG runs: {e}")
+            
             # 실시간으로 컨테이너/Airflow 상태 확인 및 업데이트
-            for job in jobs:
+            # 모든 processing 상태의 job 확인 (실패한 job도 포함)
+            processing_jobs = [job for job in jobs if job.status == "processing"]
+            
+            for job in processing_jobs:
                 if job.status == "processing":
                     # Airflow로 실행된 job인지 확인 (job_id가 "mica_"로 시작)
                     if job.job_id.startswith("mica_"):
-                        # Airflow DAG Run 상태 확인
+                        # Airflow DAG Run 상태 확인 (더 강화된 체크)
                         try:
                             airflow_response = requests.get(
                                 f"{AIRFLOW_API}/dags/mica_pipeline/dagRuns/{job.job_id}",
                                 auth=_auth(),
-                                timeout=5
+                                timeout=5  # 타임아웃 증가
                             )
                             if airflow_response.status_code == 200:
                                 airflow_data = airflow_response.json()
                                 airflow_state = airflow_data.get("state")
                                 
+                                # Airflow 상태에 따라 DB 업데이트
                                 if airflow_state in ["success", "failed"]:
                                     job.status = "completed" if airflow_state == "success" else "failed"
                                     job.completed_at = datetime.utcnow()
                                     job.progress = 100.0
                                     
                                     if airflow_state == "failed":
-                                        # Airflow 로그에서 에러 메시지 추출 (간단히 처리)
-                                        job.error_message = "Airflow DAG execution failed. Check Airflow UI for details."
+                                        # Task Instances 확인하여 더 자세한 에러 정보 추출
+                                        try:
+                                            task_response = requests.get(
+                                                f"{AIRFLOW_API}/dags/mica_pipeline/dagRuns/{job.job_id}/taskInstances",
+                                                auth=_auth(),
+                                                timeout=5
+                                            )
+                                            if task_response.status_code == 200:
+                                                tasks = task_response.json().get("task_instances", [])
+                                                failed_tasks = [t for t in tasks if t.get("state") == "failed"]
+                                                if failed_tasks:
+                                                    job.error_message = f"Airflow DAG execution failed. Failed tasks: {', '.join([t.get('task_id', 'unknown') for t in failed_tasks])}"
+                                                else:
+                                                    job.error_message = "Airflow DAG execution failed. Check Airflow UI for details."
+                                        except Exception:
+                                            job.error_message = "Airflow DAG execution failed. Check Airflow UI for details."
                                     
                                     db.commit()
+                                    print(f"✅ Updated job {job.job_id} status from Airflow: {airflow_state}")
+                                elif airflow_state == "running":
+                                    # running 상태이지만 오래 실행 중이면 체크
+                                    start_date = airflow_data.get("start_date")
+                                    if start_date:
+                                        try:
+                                            from datetime import datetime as dt
+                                            start_dt = dt.fromisoformat(start_date.replace('Z', '+00:00'))
+                                            elapsed = (datetime.utcnow() - start_dt.replace(tzinfo=None)).total_seconds()
+                                            # 2시간 이상 실행 중이면 로그 확인
+                                            if elapsed > 7200:  # 2시간
+                                                # 로그 파일 확인
+                                                log_path = Path(job.log_file) if job.log_file else None
+                                                if log_path and log_path.exists():
+                                                    try:
+                                                        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                                            log_content = f.read()
+                                                            error_keywords = ["[ ERROR ]", "ERROR", "FATAL", "failed", "Failed", "FAILED"]
+                                                            if any(keyword in log_content for keyword in error_keywords):
+                                                                # 에러가 있으면 실패로 처리
+                                                                job.status = "failed"
+                                                                job.completed_at = datetime.utcnow()
+                                                                job.progress = 100.0
+                                                                error_lines = [line for line in log_content.split('\n') if any(kw in line for kw in error_keywords)]
+                                                                job.error_message = '\n'.join(error_lines[-5:]) if error_lines else "Pipeline execution failed (stalled with errors)"
+                                                                db.commit()
+                                                                print(f"⚠️ Job {job.job_id} stalled with errors, marked as failed")
+                                                    except Exception:
+                                                        pass
+                                        except Exception:
+                                            pass
+                            elif airflow_response.status_code == 404:
+                                # DAG Run이 없으면 실패로 처리
+                                job.status = "failed"
+                                job.completed_at = datetime.utcnow()
+                                job.progress = 100.0
+                                job.error_message = "Airflow DAG Run not found (may have been deleted)"
+                                db.commit()
+                                print(f"⚠️ Job {job.job_id} DAG Run not found in Airflow, marked as failed")
                         except Exception as e:
-                            print(f"Failed to check Airflow status: {e}")
+                            print(f"Failed to check Airflow status for {job.job_id}: {e}")
                     
                     # 직접 실행된 job의 경우 Docker 컨테이너 확인
                     else:
-                        result = subprocess.run(
-                            f"docker inspect {job.container_name}",
+                        # 먼저 컨테이너가 실행 중인지 확인
+                        container_check = subprocess.run(
+                            f"docker ps --filter 'name={job.container_name}' --format '{{{{.Names}}}}'",
                             shell=True,
                             capture_output=True,
                             text=True,
-                            timeout=5
+                            timeout=3  # 타임아웃을 3초로 단축
                         )
                         
-                        if result.returncode != 0:
-                            # 컨테이너가 없음 = 완료 또는 실패
+                        container_running = container_check.returncode == 0 and container_check.stdout.strip() == job.container_name
+                        
+                        if not container_running:
+                            # 컨테이너가 실행 중이 아님 = 완료 또는 실패
                             # 로그 파일에서 에러 확인
                             has_error = False
                             error_message = None
@@ -1507,28 +1789,63 @@ async def get_mica_jobs(status: str = None):
                                 error_size = error_log_path.stat().st_size
                                 if error_size > 0:
                                     has_error = True
-                                    with open(error_log_path, 'r', encoding='utf-8', errors='ignore') as f:
-                                        error_message = f.read()[-500:]
+                                    try:
+                                        with open(error_log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                            error_message = f.read()[-500:]
+                                    except Exception:
+                                        error_message = "Error log file exists but cannot be read"
                             
                             # 2. 표준 출력 로그에서 "[ ERROR ]" 확인 (MICA Pipeline은 exit 0로 종료해도 에러 발생 가능)
                             if not has_error:
                                 log_path = Path(job.log_file) if job.log_file else None
                                 if log_path and log_path.exists():
-                                    with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
-                                        log_content = f.read()
-                                        if "[ ERROR ]" in log_content or "ERROR" in log_content:
-                                            has_error = True
-                                            # 에러 부분 추출
-                                            error_lines = [line for line in log_content.split('\n') if 'ERROR' in line]
-                                            error_message = '\n'.join(error_lines[-5:]) if error_lines else log_content[-500:]
+                                    try:
+                                        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                            log_content = f.read()
+                                            # 더 엄격한 에러 검사
+                                            error_keywords = ["[ ERROR ]", "ERROR", "FATAL", "failed", "Failed", "FAILED"]
+                                            if any(keyword in log_content for keyword in error_keywords):
+                                                has_error = True
+                                                # 에러 부분 추출
+                                                error_lines = [line for line in log_content.split('\n') if any(kw in line for kw in error_keywords)]
+                                                error_message = '\n'.join(error_lines[-10:]) if error_lines else log_content[-500:]
+                                    except Exception:
+                                        pass
                             
                             # 상태 업데이트
                             job.status = "failed" if has_error else "completed"
                             job.completed_at = datetime.utcnow()
                             job.progress = 100.0
                             if has_error:
-                                job.error_message = error_message
+                                job.error_message = error_message or "Pipeline execution failed (check logs for details)"
                             db.commit()
+                            print(f"✅ Updated job {job.job_id} status: {job.status} (container stopped)")
+                        else:
+                            # 컨테이너가 실행 중이지만, 로그를 확인하여 실패 여부 체크
+                            log_path = Path(job.log_file) if job.log_file else None
+                            if log_path and log_path.exists():
+                                try:
+                                    # 로그 파일이 최근에 업데이트되었는지 확인 (5분 이상 업데이트 안 되면 문제 가능)
+                                    log_mtime = log_path.stat().st_mtime
+                                    time_since_update = time.time() - log_mtime
+                                    
+                                    # 5분 이상 로그가 업데이트되지 않았고, 에러가 있으면 실패로 처리
+                                    if time_since_update > 300:  # 5분
+                                        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                            log_content = f.read()
+                                            error_keywords = ["[ ERROR ]", "ERROR", "FATAL", "failed", "Failed", "FAILED"]
+                                            if any(keyword in log_content for keyword in error_keywords):
+                                                # 컨테이너를 중지하고 실패로 처리
+                                                subprocess.run(f"docker stop {job.container_name}", shell=True, timeout=10)
+                                                job.status = "failed"
+                                                job.completed_at = datetime.utcnow()
+                                                job.progress = 100.0
+                                                error_lines = [line for line in log_content.split('\n') if any(kw in line for kw in error_keywords)]
+                                                job.error_message = '\n'.join(error_lines[-10:]) if error_lines else "Pipeline execution failed (stalled)"
+                                                db.commit()
+                                                print(f"⚠️ Job {job.job_id} stalled with errors, marked as failed")
+                                except Exception as e:
+                                    print(f"Error checking log for {job.job_id}: {e}")
             
             # JSON 형식으로 변환
             jobs_data = []
@@ -1673,3 +1990,17 @@ def download_derivatives():
         filename=zip_name,
         media_type="application/zip",
     )
+
+@app.get("/system-resources")
+async def get_system_resources_endpoint():
+    """시스템 리소스 사용량을 반환합니다."""
+    try:
+        return get_system_resources()
+    except Exception as e:
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /system-resources: {error_detail}")
+        return {
+            "success": False,
+            "error": str(e)
+        }

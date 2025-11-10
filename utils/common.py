@@ -81,12 +81,25 @@ def render_sidebar():
         st.title("🏥 Menu")
         st.markdown("---")
         
-        # 메뉴 버튼들
-        menu_options = ['Home', 'MICA Pipeline', 'Select Pipeline', 'Run Pipeline', 'Download Results']
+        # 메뉴 버튼들 (사용하지 않는 메뉴 제거)
+        menu_options = ['Home', 'MICA Pipeline', 'Download Results']
         
         for menu in menu_options:
             if st.button(menu, key=f"menu_{menu}", use_container_width=True):
                 st.session_state.selected_menu = menu
+        
+        st.markdown("---")
+        
+        # 사용자 정보 및 로그아웃
+        st.markdown("---")
+        username = st.session_state.get("username", "Unknown")
+        st.markdown(f"### 👤 사용자: **{username}**")
+        if st.button("🚪 로그아웃", key="logout_button", use_container_width=True):
+            st.session_state.authenticated = False
+            st.session_state.username = None
+            st.session_state.user_id = None
+            st.session_state.selected_menu = 'Home'
+            st.rerun()
         
         st.markdown("---")
         

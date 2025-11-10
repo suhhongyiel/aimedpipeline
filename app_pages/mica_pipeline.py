@@ -33,13 +33,14 @@ def render():
     4. **파이프라인 실행**: 선택된 프로세스를 실행하고 결과를 모니터링합니다
     """)
     
-    # 탭 생성
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    # 탭 생성 (로그 확인을 독립적으로 접근 가능하도록)
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📤 1. 파일 업로드",
         "✅ 2. BIDS 검증",
         "⚙️ 3. 프로세스 선택",
         "🚀 4. 실행 및 모니터링",
-        "📊 5. 로그 확인"
+        "📊 5. 로그 확인",
+        "📋 6. 전체 로그 보기"
     ])
     
     # === 탭 1: 파일 업로드 ===
@@ -75,13 +76,17 @@ def render():
             """)
         
         st.markdown("#### 업로드 설정")
+        # 로그인한 사용자별 경로 사용
+        current_user = st.session_state.get("username", "anonymous")
+        user_bids_dir = f"/app/data/{current_user}/bids"
+        
         col1, col2 = st.columns([3, 1])
         with col1:
             destination = st.text_input(
                 "업로드 디렉토리",
-                value="/app/data/bids",
+                value=user_bids_dir,
                 key="upload_destination",
-                help="BIDS 데이터가 저장될 서버 경로"
+                help=f"BIDS 데이터가 저장될 서버 경로 (사용자: {current_user})"
             )
         
         with col2:
@@ -129,7 +134,9 @@ def render():
                             
                             if result.get("success"):
                                 st.success(f"✅ {result.get('message')}")
+                                # 업로드된 경로를 세션 상태에 저장 (사용자별 경로)
                                 st.session_state.bids_directory = destination
+                                st.info(f"💡 파일이 사용자별 경로에 업로드되었습니다: `{destination}`")
                                 
                                 # 업로드 결과 표시
                                 st.markdown("**📊 업로드 결과:**")
@@ -181,7 +188,7 @@ def render():
         
         validation_dir = st.text_input(
             "검증할 디렉토리",
-            value=st.session_state.get("bids_directory", "/app/data/bids"),
+            value=st.session_state.get("bids_directory", f"/app/data/{st.session_state.get('username', 'anonymous')}/bids"),
             key="validation_dir"
         )
         
@@ -190,10 +197,22 @@ def render():
                 with st.spinner("BIDS 포맷 검증 중..."):
                     resp = requests.post(
                         f"{FASTAPI_SERVER_URL}/validate-bids",
-                        json={"directory": validation_dir}
+                        json={"directory": validation_dir},
+                        timeout=60  # 타임아웃 60초로 증가
                     )
                     resp.raise_for_status()
                     result = resp.json()
+                    
+                    # result가 None이거나 dict가 아닌 경우 처리
+                    if result is None:
+                        st.error("❌ BIDS 검증 실패: 서버에서 응답을 받지 못했습니다.")
+                        st.session_state.bids_validated = False
+                        return
+                    
+                    if not isinstance(result, dict):
+                        st.error(f"❌ BIDS 검증 실패: 예상치 못한 응답 형식입니다. ({type(result)})")
+                        st.session_state.bids_validated = False
+                        return
                     
                     # 검증 결과 헤더
                     st.markdown("---")
@@ -211,15 +230,16 @@ def render():
                         st.session_state.bids_validated = False
                     
                     # Dataset 정보
-                    if result.get("dataset_info"):
+                    dataset_info = result.get("dataset_info")
+                    if dataset_info and isinstance(dataset_info, dict):
                         st.markdown("### 📖 Dataset 정보")
                         info_col1, info_col2, info_col3 = st.columns(3)
                         with info_col1:
-                            st.metric("Dataset Name", result['dataset_info'].get('name', '-'))
+                            st.metric("Dataset Name", dataset_info.get('name', '-'))
                         with info_col2:
-                            st.metric("BIDS Version", result['dataset_info'].get('version', '-'))
+                            st.metric("BIDS Version", dataset_info.get('version', '-'))
                         with info_col3:
-                            st.metric("Dataset Type", result['dataset_info'].get('dataset_type', '-'))
+                            st.metric("Dataset Type", dataset_info.get('dataset_type', '-'))
                     
                     # 통계 정보
                     st.markdown("### 📊 통계")
@@ -229,43 +249,61 @@ def render():
                     with stat_col2:
                         st.metric("Participant 수", result.get("participants_count", "-"))
                     with stat_col3:
-                        st.metric("경고", len(result.get("warnings", [])))
+                        warnings_list = result.get("warnings", [])
+                        st.metric("경고", len(warnings_list) if isinstance(warnings_list, list) else 0)
                     
                     # Subject 목록
-                    if result.get("subject_list"):
+                    subject_list = result.get("subject_list")
+                    if subject_list and isinstance(subject_list, list):
                         with st.expander("📂 Subject 목록", expanded=False):
-                            for sub in result["subject_list"]:
+                            for sub in subject_list:
                                 st.text(f"  • {sub}")
-                            if result["subject_count"] > 10:
-                                st.info(f"... 외 {result['subject_count'] - 10}개")
+                            subject_count = result.get("subject_count", len(subject_list))
+                            if subject_count > 10:
+                                st.info(f"... 외 {subject_count - 10}개")
                     
                     # 상세 검증 결과
-                    if result.get("details"):
+                    details = result.get("details")
+                    if details and isinstance(details, list):
                         st.markdown("### ✅ 검증 상세")
-                        for detail in result["details"]:
-                            if detail.startswith("✓"):
-                                st.success(detail)
-                            elif detail.startswith("✗"):
-                                st.error(detail)
-                            else:
-                                st.info(detail)
+                        for detail in details:
+                            if isinstance(detail, str):
+                                if detail.startswith("✓"):
+                                    st.success(detail)
+                                elif detail.startswith("✗"):
+                                    st.error(detail)
+                                else:
+                                    st.info(detail)
                     
                     # 에러 표시
-                    if result.get("errors"):
+                    errors = result.get("errors")
+                    if errors and isinstance(errors, list):
                         st.markdown("### ❌ 오류")
-                        for error in result["errors"]:
+                        for error in errors:
                             st.error(error)
                     
                     # 경고 표시
-                    if result.get("warnings"):
+                    warnings = result.get("warnings")
+                    if warnings and isinstance(warnings, list):
                         st.markdown("### ⚠️ 경고")
-                        for warning in result["warnings"]:
+                        for warning in warnings:
                             st.warning(warning)
                             
             except requests.exceptions.ConnectionError:
-                st.error("❌ FastAPI 서버에 연결할 수 없습니다.")
+                st.error("❌ FastAPI 서버에 연결할 수 없습니다. 백엔드 서버가 실행 중인지 확인해주세요.")
+                st.session_state.bids_validated = False
+            except requests.exceptions.Timeout:
+                st.error("❌ 요청 시간 초과 (60초). 디렉토리가 너무 크거나 서버가 느릴 수 있습니다.")
+                st.session_state.bids_validated = False
+            except requests.exceptions.HTTPError as e:
+                st.error(f"❌ HTTP 오류: {e.response.status_code if hasattr(e, 'response') else 'Unknown'}")
+                st.session_state.bids_validated = False
             except Exception as e:
+                import traceback
                 st.error(f"❌ 오류: {str(e)}")
+                with st.expander("🔍 상세 오류 정보"):
+                    st.code(traceback.format_exc())
+                st.session_state.bids_validated = False
     
     # === 탭 3: 프로세스 선택 ===
 
@@ -563,6 +601,9 @@ def render():
         if st.session_state.get("bids_validated") and st.session_state.get("bids_subject_list"):
             available_subjects = st.session_state.get("bids_subject_list", [])
         
+        # session_id 변수 초기화 (항상 정의되도록)
+        session_id = ""
+        
         # 전체 실행 옵션
         run_all_subjects = st.checkbox(
             "🔄 전체 Subject 실행",
@@ -577,6 +618,7 @@ def render():
                     for sub in available_subjects:
                         st.text(f"  • {sub}")
             subject_selection = "all"
+            session_id = ""  # 전체 실행 시 세션 없음
         else:
             col1, col2 = st.columns([2, 1])
             with col1:
@@ -611,7 +653,9 @@ def render():
                         available_sessions = []
                         error_message = None
                         try:
-                            bids_dir = st.session_state.get("bids_directory", "/app/data/bids")
+                            # 사용자별 경로 사용
+                            current_user = st.session_state.get("username", "anonymous")
+                            bids_dir = st.session_state.get("bids_directory", f"/app/data/{current_user}/bids")
                             with st.spinner("Session 목록 로딩 중..."):
                                 resp = requests.get(
                                     f"{FASTAPI_SERVER_URL}/get-sessions",
@@ -680,15 +724,19 @@ def render():
                         
                         # 선택된 값에서 실제 session_id 추출
                         if selected_session_display == "전체 (자동 감지)":
+                            # 전체 세션 실행 (빈 문자열 = 모든 세션 처리)
                             session_id = ""
+                            st.session_state.mica_session = ""  # 명시적으로 저장
                         else:
                             # "ses-M126 (M126)" 형식에서 session_id 추출
                             for s in available_sessions:
                                 if f"{s['display_name']} ({s['session_id']})" == selected_session_display:
                                     session_id = s['session_id']
+                                    st.session_state.mica_session = session_id  # 명시적으로 저장
                                     break
                             else:
                                 session_id = ""
+                                st.session_state.mica_session = ""
                     else:
                         # Session이 없거나 에러가 발생한 경우
                         if error_message:
@@ -698,19 +746,24 @@ def render():
                         else:
                             st.caption("ℹ️ Session이 없거나 자동 감지됩니다")
                         
-                        session_id = st.text_input(
+                        session_id_input = st.text_input(
                             "Session ID (선택)",
                             value="",
-                            placeholder="예: M126 또는 ses-M126",
-                            help="특정 세션만 처리 (선택사항, 비워두면 자동 감지)",
+                            placeholder="예: M126 또는 ses-M126 (비워두면 전체 세션)",
+                            help="특정 세션만 처리 (선택사항, 비워두면 전체 세션 자동 감지)",
                             key="session_text_input"
                         )
                         # "ses-" 접두사 제거
-                        if session_id:
-                            session_id = session_id.replace("ses-", "").strip()
+                        if session_id_input:
+                            session_id = session_id_input.replace("ses-", "").strip()
+                            st.session_state.mica_session = session_id  # 명시적으로 저장
+                        else:
+                            # 비워두면 전체 세션 처리
+                            session_id = ""
+                            st.session_state.mica_session = ""  # 명시적으로 저장
                 else:
                     # Subject가 선택되지 않은 경우
-                    session_id = st.text_input(
+                    session_id_input = st.text_input(
                         "Session ID (선택)",
                         value="",
                         placeholder="Subject를 먼저 선택하세요",
@@ -718,6 +771,8 @@ def render():
                         key="session_text_input",
                         disabled=True
                     )
+                    session_id = ""  # Subject가 선택되지 않았으므로 빈 문자열
+                    st.session_state.mica_session = ""
         
         # 선택된 프로세스 저장
         selected_processes = []
@@ -744,10 +799,14 @@ def render():
         col1, col2, col3 = st.columns(3)
         
         with col1:
+            # 사용자별 라이센스 경로 (공통 라이센스 파일 사용)
+            current_user = st.session_state.get("username", "anonymous")
+            # 공통 라이센스 파일 경로 (사용자별이 아닌 공통 경로)
+            default_license_path = "/app/data/license.txt"
             fs_licence = st.text_input(
                 "FreeSurfer 라이센스 경로",
-                value="/app/data/license.txt",
-                help="FreeSurfer 라이센스 파일의 절대 경로"
+                value=default_license_path,
+                help="FreeSurfer 라이센스 파일의 절대 경로 (공통 경로: /app/data/license.txt)"
             )
         
         with col2:
@@ -770,41 +829,20 @@ def render():
         st.markdown("---")
         st.markdown("#### ⚙️ 실행 방식")
         
-        use_airflow = st.checkbox(
-            "🔄 Airflow를 통해 실행 (권장: 다중 사용자 환경)",
-            value=False,
-            help="""
-            ✅ Airflow 사용 시 장점:
-            • 작업 큐 관리 (순서대로 실행)
-            • 리소스 제한 및 모니터링
-            • 사용자별 작업 추적
-            • 자동 재시도 및 알림
-            • 관리자가 Airflow UI에서 중앙 관리
-            
-            ⚠️ 직접 실행 시:
-            • 즉시 실행 (큐 없음)
-            • 리소스 제한 없음
-            • Download Results에서만 확인 가능
-            """
-        )
+        # 무조건 Airflow로 실행 (체크박스 제거)
+        use_airflow = True
+        st.info("💡 **Airflow를 통해 실행됩니다.** Airflow UI에서 실행 상태를 확인하세요: [http://localhost:8081](http://localhost:8081) (admin/admin)")
         
-        if use_airflow:
-            st.info("💡 Airflow UI에서 실행 상태를 확인하세요: http://localhost:8080 (admin/admin)")
-            
-            # 사용자 이름 입력
-            user_name = st.text_input(
-                "사용자 이름",
-                value=os.getenv("USER", "anonymous"),
-                help="작업 추적을 위한 사용자 이름"
-            )
-            st.session_state.mica_user = user_name
-        else:
-            st.session_state.mica_user = "direct_execution"
+        # 사용자 이름은 로그인한 사용자로 자동 설정
+        current_user = st.session_state.get("username", "anonymous")
+        st.markdown(f"**👤 사용자:** `{current_user}`")
+        st.session_state.mica_user = current_user
         
-        # 세션 저장
+        # 세션 저장 (명시적으로 저장)
         st.session_state.mica_processes = selected_processes
         st.session_state.mica_subject = subject_selection
-        st.session_state.mica_session = session_id if not run_all_subjects else ""
+        # session_id 변수는 위에서 항상 정의되므로 안전하게 사용 가능
+        st.session_state.mica_session = session_id if session_id else ""
         st.session_state.mica_use_airflow = use_airflow
         st.session_state.mica_run_all = run_all_subjects
         st.session_state.mica_fs_licence = fs_licence
@@ -830,34 +868,31 @@ def render():
             st.warning("⚠️ 먼저 BIDS 검증을 완료해주세요 (탭 2)")
             return
         
-        if not st.session_state.get("mica_processes"):
-            st.warning("⚠️ 먼저 프로세스를 선택해주세요 (탭 3)")
-            return
-        
-        if not st.session_state.get("mica_subject") or st.session_state.get("mica_subject") == "":
-            st.warning("⚠️ Subject를 선택해주세요 (탭 3)")
-            return
-        
-        # 실행 설정 요약
-        st.markdown("#### 📋 실행 설정 요약")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            run_mode = "🔄 전체 Subject" if st.session_state.get('mica_run_all') else f"🎯 단일 Subject"
-            subject_info = "전체" if st.session_state.get('mica_run_all') else st.session_state.get('mica_subject', '-')
-            st.markdown(f"""
-            **데이터 정보:**
-            - BIDS 디렉토리: `{st.session_state.get('bids_directory', '-')}`
-            - 실행 모드: {run_mode}
-            - Subject: `{subject_info}`
-            - Session: `{st.session_state.get('mica_session', '-') or '전체'}`
-            """)
-        
-        with col2:
-            st.markdown(f"""
-            **선택된 프로세스:**
-            {chr(10).join(['- ' + p for p in st.session_state.get('mica_processes', [])])}
-            """)
+        # 프로세스나 Subject 선택 없이도 로그 확인 가능하도록 변경
+        # 실행 설정 요약은 선택된 경우에만 표시
+        if st.session_state.get("mica_processes") and len(st.session_state.get("mica_processes", [])) > 0:
+            if st.session_state.get("mica_subject") and st.session_state.get("mica_subject") != "":
+                # 실행 설정 요약
+                st.markdown("#### 📋 실행 설정 요약")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    run_mode = "🔄 전체 Subject" if st.session_state.get('mica_run_all') else f"🎯 단일 Subject"
+                    subject_info = "전체" if st.session_state.get('mica_run_all') else st.session_state.get('mica_subject', '-')
+                    st.markdown(f"""
+                    **데이터 정보:**
+                    - BIDS 디렉토리: `{st.session_state.get('bids_directory', '-')}`
+                    - 실행 모드: {run_mode}
+                    - Subject: `{subject_info}`
+                    - Session: `{st.session_state.get('mica_session', '-') or '전체'}`
+                    """)
+                
+                with col2:
+                    st.markdown(f"""
+                    **선택된 프로세스:**
+                    {chr(10).join(['- ' + p for p in st.session_state.get('mica_processes', [])])}
+                    """)
+                st.markdown("---")
         
         # 실행 버튼
         col1, col2, col3 = st.columns([1, 1, 2])
@@ -865,17 +900,29 @@ def render():
             if st.button("▶️ 실행", type="primary", use_container_width=True):
                 try:
                     with st.spinner("MICA Pipeline 실행 중..."):
+                        # 사용자 정보 가져오기 (로그인한 사용자)
+                        current_user = st.session_state.get("username", st.session_state.get("mica_user", "anonymous"))
+                        user_bids_dir = st.session_state.get("bids_directory", f"/app/data/{current_user}/bids")
+                        
+                        # session_id 가져오기 (디버깅용)
+                        session_id_to_send = st.session_state.get("mica_session", "")
+                        # 디버깅 정보 표시
+                        st.write(f"🔍 DEBUG - Subject: {st.session_state.get('mica_subject')}")
+                        st.write(f"🔍 DEBUG - Session ID from state: '{session_id_to_send}'")
+                        st.write(f"🔍 DEBUG - Session ID type: {type(session_id_to_send)}")
+                        st.write(f"🔍 DEBUG - Session ID is empty: {not session_id_to_send}")
+                        
                         payload = {
-                            "bids_dir": st.session_state.get("bids_directory"),
-                            "output_dir": "/app/data/derivatives",
+                            "bids_dir": user_bids_dir,
+                            "output_dir": f"/app/data/{current_user}/derivatives",  # 사용자별 경로
                             "subject_id": st.session_state.get("mica_subject"),
                             "processes": st.session_state.get("mica_processes"),
-                            "session_id": st.session_state.get("mica_session", ""),
+                            "session_id": session_id_to_send if session_id_to_send else "",
                             "fs_licence": st.session_state.get("mica_fs_licence", "/app/data/license.txt"),
                             "threads": st.session_state.get("mica_threads", 4),
                             "freesurfer": st.session_state.get("mica_freesurfer", True),
-                            "use_airflow": st.session_state.get("mica_use_airflow", False),
-                            "user": st.session_state.get("mica_user", "anonymous"),
+                            "use_airflow": True,  # 무조건 Airflow로 실행
+                            "user": current_user,  # 로그인한 사용자 사용
                             "timeout": 3600,
                             "proc_structural_flags": st.session_state.get("mica_proc_structural_flags", []),
                             "proc_surf_flags": st.session_state.get("mica_proc_surf_flags", []),
@@ -981,6 +1028,7 @@ def render():
     # === 탭 5: 로그 확인 ===
     with tab5:
         st.markdown("### 📊 MICA Pipeline 로그")
+        st.info("💡 **Subject ID를 선택하지 않아도 모든 로그를 확인할 수 있습니다.** 프로세스 선택 탭에서 Subject를 선택할 필요가 없습니다.")
         
         # 실행 중인 컨테이너 확인
         st.markdown("#### 🐳 실행 중인 컨테이너")
@@ -1034,10 +1082,123 @@ def render():
                 st.rerun()
         
         try:
-            # 로그 목록 가져오기
+            # 사용자별 경로 사용
+            current_user = st.session_state.get("username", "anonymous")
+            user_output_dir = f"/app/data/{current_user}/derivatives"
+            
+            # 로그 목록 가져오기 (사용자별 경로 사용)
+            # 로그는 사용자별 경로에 저장되므로 자동으로 필터링됨
             resp = requests.get(
                 f"{FASTAPI_SERVER_URL}/mica-logs",
-                params={"output_dir": "/app/data/derivatives"},
+                params={"output_dir": user_output_dir},
+                timeout=10
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            
+            if not result.get("logs"):
+                st.info("📝 아직 생성된 로그가 없습니다. 먼저 파이프라인을 실행해주세요.")
+                st.markdown("""
+                **💡 팁:**
+                - 로그는 파이프라인 실행 후 자동으로 생성됩니다
+                - 프로세스 선택 탭에서 Subject를 선택하지 않아도 로그를 확인할 수 있습니다
+                """)
+            else:
+                st.success(f"✅ {result.get('count', 0)}개의 로그 파일 발견")
+                
+                # 프로세스별로 그룹화하여 표시
+                logs_by_process = {}
+                for log in result.get("logs", []):
+                    process = log.get("process", "unknown")
+                    if process not in logs_by_process:
+                        logs_by_process[process] = []
+                    logs_by_process[process].append(log)
+                
+                # 프로세스별로 표시
+                for process, process_logs in logs_by_process.items():
+                    with st.expander(f"📊 {process} ({len(process_logs)}개 로그)", expanded=True):
+                        for log in process_logs:
+                            with st.expander(
+                                f"{'❌' if log.get('has_error') else '✅'} {log.get('subject')}",
+                                expanded=False
+                            ):
+                                # 로그 정보
+                                col1, col2, col3 = st.columns(3)
+                                with col1:
+                                    st.metric("프로세스", log.get("process"))
+                                with col2:
+                                    st.metric("로그 크기", f"{log.get('size', 0):,} bytes")
+                                with col3:
+                                    from datetime import datetime
+                                    modified_time = datetime.fromtimestamp(log.get("modified", 0))
+                                    st.metric("수정 시간", modified_time.strftime("%Y-%m-%d %H:%M:%S"))
+                                
+                                # 표준 출력 로그
+                                st.markdown("#### 📤 표준 출력 (최근 100줄)")
+                                try:
+                                    log_resp = requests.get(
+                                        f"{FASTAPI_SERVER_URL}/mica-log-content",
+                                        params={"log_file": log.get("log_file"), "lines": 100},
+                                        timeout=10
+                                    )
+                                    log_resp.raise_for_status()
+                                    log_content = log_resp.json()
+                                    
+                                    if log_content.get("content"):
+                                        st.code(log_content.get("content"), language="text")
+                                        st.caption(f"전체 {log_content.get('total_lines', 0)}줄 중 {log_content.get('returned_lines', 0)}줄 표시")
+                                    else:
+                                        st.info("로그가 비어있습니다.")
+                                except Exception as e:
+                                    st.error(f"로그 읽기 실패: {str(e)}")
+                                
+                                # 에러 로그
+                                if log.get("has_error"):
+                                    st.markdown("#### ⚠️ 에러 로그 (최근 100줄)")
+                                    try:
+                                        error_resp = requests.get(
+                                            f"{FASTAPI_SERVER_URL}/mica-log-content",
+                                            params={"log_file": log.get("error_file"), "lines": 100},
+                                            timeout=10
+                                        )
+                                        error_resp.raise_for_status()
+                                        error_content = error_resp.json()
+                                        
+                                        if error_content.get("content"):
+                                            st.code(error_content.get("content"), language="text")
+                                            st.caption(f"전체 {error_content.get('total_lines', 0)}줄 중 {error_content.get('returned_lines', 0)}줄 표시")
+                                        else:
+                                            st.info("에러 로그가 비어있습니다.")
+                                    except Exception as e:
+                                        st.error(f"에러 로그 읽기 실패: {str(e)}")
+        
+        except requests.exceptions.ConnectionError:
+            st.error("❌ FastAPI 서버에 연결할 수 없습니다.")
+        except requests.exceptions.Timeout:
+            st.error("❌ 요청 시간 초과")
+        except Exception as e:
+            st.error(f"❌ 오류: {str(e)}")
+    
+    # === 탭 6: 전체 로그 보기 (프로세스 선택 없이 접근 가능) ===
+    with tab6:
+        st.markdown("### 📋 전체 로그 보기")
+        st.info("💡 프로세스를 선택하지 않아도 모든 로그를 확인할 수 있습니다.")
+        
+        # 새로고침 버튼
+        col1, col2 = st.columns([4, 1])
+        with col2:
+            if st.button("🔄 새로고침", key="refresh_all_logs", use_container_width=True):
+                st.rerun()
+        
+        try:
+            # 사용자별 경로 사용
+            current_user = st.session_state.get("username", "anonymous")
+            user_output_dir = f"/app/data/{current_user}/derivatives"
+            
+            # 로그 목록 가져오기 (사용자별 경로 사용)
+            resp = requests.get(
+                f"{FASTAPI_SERVER_URL}/mica-logs",
+                params={"output_dir": user_output_dir},
                 timeout=10
             )
             resp.raise_for_status()
@@ -1048,61 +1209,71 @@ def render():
             else:
                 st.success(f"✅ {result.get('count', 0)}개의 로그 파일 발견")
                 
-                # 로그 목록 표시
+                # 프로세스별로 그룹화
+                logs_by_process = {}
                 for log in result.get("logs", []):
-                    with st.expander(
-                        f"{'❌' if log.get('has_error') else '✅'} {log.get('subject')} - {log.get('process')}",
-                        expanded=False
-                    ):
-                        # 로그 정보
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("프로세스", log.get("process"))
-                        with col2:
-                            st.metric("로그 크기", f"{log.get('size', 0):,} bytes")
-                        with col3:
-                            from datetime import datetime
-                            modified_time = datetime.fromtimestamp(log.get("modified", 0))
-                            st.metric("수정 시간", modified_time.strftime("%Y-%m-%d %H:%M:%S"))
-                        
-                        # 표준 출력 로그
-                        st.markdown("#### 📤 표준 출력 (최근 100줄)")
-                        try:
-                            log_resp = requests.get(
-                                f"{FASTAPI_SERVER_URL}/mica-log-content",
-                                params={"log_file": log.get("log_file"), "lines": 100},
-                                timeout=10
-                            )
-                            log_resp.raise_for_status()
-                            log_content = log_resp.json()
-                            
-                            if log_content.get("content"):
-                                st.code(log_content.get("content"), language="text")
-                                st.caption(f"전체 {log_content.get('total_lines', 0)}줄 중 {log_content.get('returned_lines', 0)}줄 표시")
-                            else:
-                                st.info("로그가 비어있습니다.")
-                        except Exception as e:
-                            st.error(f"로그 읽기 실패: {str(e)}")
-                        
-                        # 에러 로그
-                        if log.get("has_error"):
-                            st.markdown("#### ⚠️ 에러 로그 (최근 100줄)")
-                            try:
-                                error_resp = requests.get(
-                                    f"{FASTAPI_SERVER_URL}/mica-log-content",
-                                    params={"log_file": log.get("error_file"), "lines": 100},
-                                    timeout=10
-                                )
-                                error_resp.raise_for_status()
-                                error_content = error_resp.json()
+                    process = log.get("process", "unknown")
+                    if process not in logs_by_process:
+                        logs_by_process[process] = []
+                    logs_by_process[process].append(log)
+                
+                # 프로세스별로 표시
+                for process, process_logs in logs_by_process.items():
+                    with st.expander(f"📊 {process} ({len(process_logs)}개 로그)", expanded=True):
+                        for log in process_logs:
+                            with st.expander(
+                                f"{'❌' if log.get('has_error') else '✅'} {log.get('subject')}",
+                                expanded=False
+                            ):
+                                # 로그 정보
+                                col1, col2, col3 = st.columns(3)
+                                with col1:
+                                    st.metric("프로세스", log.get("process"))
+                                with col2:
+                                    st.metric("로그 크기", f"{log.get('size', 0):,} bytes")
+                                with col3:
+                                    from datetime import datetime
+                                    modified_time = datetime.fromtimestamp(log.get("modified", 0))
+                                    st.metric("수정 시간", modified_time.strftime("%Y-%m-%d %H:%M:%S"))
                                 
-                                if error_content.get("content"):
-                                    st.code(error_content.get("content"), language="text")
-                                    st.caption(f"전체 {error_content.get('total_lines', 0)}줄 중 {error_content.get('returned_lines', 0)}줄 표시")
-                                else:
-                                    st.info("에러 로그가 비어있습니다.")
-                            except Exception as e:
-                                st.error(f"에러 로그 읽기 실패: {str(e)}")
+                                # 표준 출력 로그
+                                st.markdown("#### 📤 표준 출력 (최근 100줄)")
+                                try:
+                                    log_resp = requests.get(
+                                        f"{FASTAPI_SERVER_URL}/mica-log-content",
+                                        params={"log_file": log.get("log_file"), "lines": 100},
+                                        timeout=10
+                                    )
+                                    log_resp.raise_for_status()
+                                    log_content = log_resp.json()
+                                    
+                                    if log_content.get("content"):
+                                        st.code(log_content.get("content"), language="text")
+                                        st.caption(f"전체 {log_content.get('total_lines', 0)}줄 중 {log_content.get('returned_lines', 0)}줄 표시")
+                                    else:
+                                        st.info("로그가 비어있습니다.")
+                                except Exception as e:
+                                    st.error(f"로그 읽기 실패: {str(e)}")
+                                
+                                # 에러 로그
+                                if log.get("has_error"):
+                                    st.markdown("#### ⚠️ 에러 로그 (최근 100줄)")
+                                    try:
+                                        error_resp = requests.get(
+                                            f"{FASTAPI_SERVER_URL}/mica-log-content",
+                                            params={"log_file": log.get("error_file"), "lines": 100},
+                                            timeout=10
+                                        )
+                                        error_resp.raise_for_status()
+                                        error_content = error_resp.json()
+                                        
+                                        if error_content.get("content"):
+                                            st.code(error_content.get("content"), language="text")
+                                            st.caption(f"전체 {error_content.get('total_lines', 0)}줄 중 {error_content.get('returned_lines', 0)}줄 표시")
+                                        else:
+                                            st.info("에러 로그가 비어있습니다.")
+                                    except Exception as e:
+                                        st.error(f"에러 로그 읽기 실패: {str(e)}")
         
         except requests.exceptions.ConnectionError:
             st.error("❌ FastAPI 서버에 연결할 수 없습니다.")
