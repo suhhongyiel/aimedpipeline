@@ -285,13 +285,6 @@ def render():
         with col_sp:
             st.markdown("#### Structural Processing")
             # === Structural 계열 플래그 빌더 ===
-            def build_proc_structural_flags(a: dict) -> list[str]:
-                flags = []
-                if a.get("T1wStr"):             flags += ["-T1wStr", a["T1wStr"]]
-                if a.get("uni", False):         flags += ["-uni"]
-                if a.get("mf", None) not in (None, ""):
-                    flags += ["-mf", str(a["mf"])]
-                return flags
 
             def build_proc_surf_flags(a: dict) -> list[str]:
                 flags = []
@@ -306,49 +299,15 @@ def render():
                 flags = []
                 if a.get("atlas"): flags += ["-atlas", a["atlas"]]
                 return flags
-            
-
-            proc_struct = st.checkbox("proc_structural", value=True, help="T1w 구조 영상 처리")
 
             # --- proc_structural 옵션 ---
+            proc_struct = st.checkbox("proc_structural", value=True, help="T1w 구조 영상 처리")
             proc_structural_flags = []
-            if proc_struct:
-                with st.expander("🧱 proc_structural 옵션", expanded=False):
-                    st.caption("micapipe -proc_structural 인자. 비워두면 micapipe 기본값 사용.")
-                    c1, c2 = st.columns([2,1])
-                    with c1:
-                        T1wStr_struct = st.text_input("T1wStr (str)", value="T1w.nii",
-                                                    help="사용할 T1w를 찾는 문자열 (기본: T1w.nii)")
-                    with c2:
-                        uni_struct = st.checkbox("uni (UNI-T1w reference)", value=False)
-                    mf_struct = st.number_input("mf (int)", min_value=0, max_value=100, value=3,
-                                            help="MP2RAGE denoising factor (예: 3 for 7T)")
-                    proc_structural_flags = build_proc_structural_flags({
-                        "T1wStr": T1wStr_struct, "uni": uni_struct, "mf": mf_struct
-                    })
 
             # --- proc_surf 옵션 ---
-            proc_surf = st.checkbox("proc_surf", value=True, help="Surface 재구성")
+            proc_surf = st.checkbox("proc_surf", value=False, help="Surface 재구성")
+            #use_freesurfer = st.checkbox("FreeSurfer 사용 (체크=FreeSurfer / 미체크=FastSurfer)", value=True)
             proc_surf_flags = []
-            if proc_surf:
-                with st.expander("🌊 proc_surf 옵션", expanded=False):
-                    st.caption("micapipe -proc_surf 인자")
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        T1wStr_surf = st.text_input("T1wStr (str)", value="T1w.nii")
-                        surf_dir = st.text_input("surf_dir (path)", value="", placeholder="/path/to/surf_dir")
-                        T1_native = st.text_input("T1 (path of t1nativepro)", value="", placeholder="/path/to/T1nativepro.nii.gz")
-                    with c2:
-                        freesurfer_flag = st.checkbox("freesurfer (존재 플래그)", value=False,
-                                                    help="켜면 -freesurfer 플래그가 전달됩니다")
-                        fs_licence_ui = st.text_input("fs_licence (path)", value=st.session_state.get("mica_fs_licence",""))
-                    proc_surf_flags = build_proc_surf_flags({
-                        "T1wStr": T1wStr_surf,
-                        "freesurfer": freesurfer_flag,
-                        "surf_dir": surf_dir,
-                        "fs_licence": fs_licence_ui,
-                        "T1": T1_native
-                    })
 
             post_structural = st.checkbox("post_structural", value=False, help="구조 영상 후처리")
             # --- post_structural 옵션 ---
