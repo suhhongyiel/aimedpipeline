@@ -28,7 +28,7 @@ from fastapi import Depends
 AIRFLOW_BASE = os.getenv("AIRFLOW_BASE_URL", "http://airflow:8080")
 #AIRFLOW_BASE = os.getenv("AIRFLOW_BASE_URL", "http://localhost:8080")
 AIRFLOW_API  = f"{AIRFLOW_BASE}/api/v1"
-AIRFLOW_DAG  = os.getenv("AIRFLOW_DAG_ID", "mri_pipeline")
+AIRFLOW_DAG  = os.getenv("AIRFLOW_DAG_ID", "mica_pipeline")
 AIRFLOW_USER = os.getenv("AIRFLOW_USER", "admin")
 AIRFLOW_PASS = os.getenv("AIRFLOW_PASSWORD", "admin")
 
@@ -236,7 +236,10 @@ async def list_files(path: str = "/app/workspace"):
             "count": len(files)
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.post("/create-file")
 async def create_file(data: dict):
@@ -267,7 +270,10 @@ async def create_file(data: dict):
             "message": f"File created: {file_path}"
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.delete("/delete-file")
 async def delete_file(file_path: str, work_dir: str = "/app/workspace"):
@@ -304,7 +310,10 @@ async def delete_file(file_path: str, work_dir: str = "/app/workspace"):
             "message": f"{item_type.capitalize()} deleted: {file_path}"
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.get("/read-file")
 async def read_file(file_path: str, work_dir: str = "/app/workspace"):
@@ -339,7 +348,10 @@ async def read_file(file_path: str, work_dir: str = "/app/workspace"):
             "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.post("/upload-file")
 async def upload_file(
@@ -430,7 +442,10 @@ async def upload_file(
         
         return response
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.post("/validate-bids")
 async def validate_bids(directory: str = "/app/data/bids"):
@@ -562,7 +577,96 @@ async def validate_bids(directory: str = "/app/data/bids"):
         
         return validation_result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
+
+@app.get("/get-sessions")
+async def get_sessions(subject_id: str, bids_dir: str = "/app/data/bids"):
+    """특정 Subject의 Session 목록을 가져옵니다."""
+    try:
+        # 호스트 데이터 디렉토리 확인
+        host_data_dir = os.getenv("HOST_DATA_DIR", "/home/admin1/Documents/aimedpipeline/data")
+        
+        # Subject 디렉토리 경로 구성
+        sub_dirname = subject_id if subject_id.startswith("sub-") else f"sub-{subject_id}"
+        
+        # 여러 경로 시도 (컨테이너 내부 경로 우선, 호스트 경로는 백업)
+        possible_paths = []
+        
+        # 1. 컨테이너 내부 경로 (마운트된 경로)
+        if bids_dir.startswith('/app/data/'):
+            possible_paths.append(Path(bids_dir) / sub_dirname)
+            possible_paths.append(Path(bids_dir) / subject_id)
+        
+        # 2. 직접 컨테이너 경로 시도
+        possible_paths.append(Path("/app/data/bids") / sub_dirname)
+        possible_paths.append(Path("/app/data/bids") / subject_id)
+        
+        # 3. 호스트 경로 (Backend가 호스트에서 실행 중인 경우)
+        possible_paths.append(Path(host_data_dir) / "bids" / sub_dirname)
+        possible_paths.append(Path(host_data_dir) / "bids" / subject_id)
+        
+        # 4. 상대 경로도 시도 (Backend가 프로젝트 루트에서 실행 중인 경우)
+        possible_paths.append(Path("./data/bids") / sub_dirname)
+        possible_paths.append(Path("./data/bids") / subject_id)
+        
+        found_path = None
+        for path in possible_paths:
+            try:
+                if path.exists():
+                    found_path = path
+                    break
+            except Exception:
+                continue
+        
+        if not found_path:
+            # 에러 메시지에 시도한 경로들 포함
+            tried_paths = [str(p) for p in possible_paths[:4]]  # 처음 4개만 표시
+            return {
+                "success": False,
+                "sessions": [],
+                "message": f"Subject directory not found. Tried: {', '.join(tried_paths)}"
+            }
+        
+        # Session 디렉토리 찾기
+        session_dirs = []
+        try:
+            for item in found_path.iterdir():
+                if item.is_dir() and item.name.startswith("ses-"):
+                    session_id = item.name.replace("ses-", "")
+                    session_dirs.append({
+                        "session_id": session_id,
+                        "display_name": item.name,  # ses-M126
+                        "full_name": item.name      # ses-M126
+                    })
+        except Exception as e:
+            return {
+                "success": False,
+                "sessions": [],
+                "message": f"Error reading directory {found_path}: {str(e)}"
+            }
+        
+        # Session ID로 정렬
+        session_dirs.sort(key=lambda x: x["session_id"])
+        
+        return {
+            "success": True,
+            "subject_id": subject_id,
+            "sessions": session_dirs,
+            "count": len(session_dirs),
+            "message": f"Found {len(session_dirs)} session(s) for {subject_id}",
+            "debug_path": str(found_path)  # 디버깅용
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "sessions": [],
+            "message": f"Error: {str(e)}",
+            "traceback": traceback.format_exc()
+        }
 
 async def run_mica_via_airflow(
     subject_id: str,
@@ -682,30 +786,103 @@ async def run_mica_pipeline(data: dict):
         user = data.get("user", "anonymous")
         
         # 호스트의 실제 데이터 경로 (환경 변수에서 가져오기)
-        host_data_dir = os.getenv("HOST_DATA_DIR", "/data")
+        host_data_dir = os.getenv("HOST_DATA_DIR", "/home/admin1/Documents/aimedpipeline/data")
         
         # 필수 파라미터 확인 (컨테이너 내부 경로)
         bids_dir = data.get("bids_dir", "./data/bids")
         output_dir = data.get("output_dir", "./data/derivatives")
         subject_id = data.get("subject_id")
         processes = data.get("processes", [])
+
+        # ✅ proc_structural 단독 선택 여부 (미니멀 모드 스위치)
+        simple_structural = (processes == ["proc_structural"])
         
         # 추가 파라미터
         session_id = data.get("session_id", "")
-        fs_licence = data.get("fs_licence", "./data/license.txt")
+        # session_id에서 "ses-" 접두사 제거 (사용자가 "ses-01" 형식으로 입력할 수 있음)
+        if session_id:
+            session_id = session_id.replace("ses-", "").strip()
+        fs_licence = data.get("fs_licence", "./home/admin1/Documents/aimedpipeline/data/license.txt")
         threads = data.get("threads", 4)
         freesurfer = data.get("freesurfer", True)
     
-        #프로세스
+        # 프로세스별 세부 플래그
+        # (요구사항: proc_structural/proc_surf는 옵션 미사용. post_structural만 atlas 허용)
         proc_structural_flags = data.get("proc_structural_flags", [])
         proc_surf_flags = data.get("proc_surf_flags", [])
         post_structural_flags = data.get("post_structural_flags", [])
-
         proc_func_flags = data.get("proc_func_flags", [])
         dwi_flags = data.get("dwi_flags", [])
         sc_flags = data.get("sc_flags", [])
+
+        # 유틸 함수들 -----------------------------------------------------------
+        def join_tokens(tokens: list[str]) -> str:
+            # 각 토큰을 shlex.quote로 감싸 안전하게 공백/특수문자 처리
+            return " ".join(shlex.quote(t) for t in tokens if t is not None and str(t) != "")
+
+        def normalize_flags(tokens: list[str]) -> list[str]:
+            """
+            - 값 동반 옵션은 '마지막 값 우선'으로 1회만 남김
+            - 토글형 플래그는 중복 제거
+            - -freesurfer/-fs_licence 는 여기서 제거(전역에서 1회만 삽입)
+            """
+            with_val = {
+                "-T1wStr", "-fs_licence", "-surf_dir", "-T1", "-atlas",
+                "-mainScanStr", "-func_pe", "-func_rpe", "-mainScanRun",
+                "-phaseReversalRun", "-topupConfig", "-icafixTraining",
+                "-sesAnat"
+            }
+            kv = {}               # option -> value (마지막 값이 덮어씀)
+            toggles = set()       # 토글형 모음
+            passthrough = []      # 기타(값 없는) 토큰 보관
+
+            it = iter(tokens)
+            for t in it:
+                if t in with_val:
+                    v = next(it, None)
+                    if v is None or (isinstance(v, str) and v.startswith("-")):
+                        continue
+                    kv[t] = v
+                else:
+                    # -freesurfer/-fs_licence 는 전역에서만 넣기: 여기서 제거
+                    if t in ("-freesurfer",):
+                        continue
+                    if t == "-fs_licence":
+                        _ = next(it, None)  # 값 소모만 하고 버림
+                        continue
+                    toggles.add(t) if t.startswith("-") else passthrough.append(t)
+
+            out = []
+            for k, v in kv.items():
+                if k == "-fs_licence":
+                    continue
+                out += [k, v]
+
+            out += sorted(t for t in toggles if t not in ("-freesurfer",))
+            out += passthrough
+            return out
+
+        def convert_to_host_path(container_path: str) -> str:
+            """컨테이너 경로를 호스트 경로로 변환"""
+            if container_path.startswith("/app/data"):
+                return container_path.replace("/app/data", host_data_dir)
+            return container_path
+        # ---------------------------------------------------------------------
+
+        # 호스트 경로로 변환
+        host_bids_dir = convert_to_host_path(bids_dir)
+        host_output_dir = convert_to_host_path(output_dir)
+        host_fs_licence = convert_to_host_path(fs_licence)
         
-        # Airflow를 통한 실행
+        if not subject_id:
+            raise HTTPException(status_code=400, detail="subject_id is required")
+        if not processes:
+            raise HTTPException(status_code=400, detail="At least one process must be selected")
+        
+        # 출력 디렉토리 생성 (컨테이너 내부 경로)
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        
+        # Airflow로 넘기는 경우는 기존 그대로 유지
         if use_airflow:
             return await run_mica_via_airflow(
                 subject_id=subject_id,
@@ -717,6 +894,7 @@ async def run_mica_pipeline(data: dict):
                 threads=threads,
                 freesurfer=freesurfer,
                 user=user,
+                # 아래 두 플래그는 무시되지만 인터페이스 유지
                 proc_structural_flags=proc_structural_flags,
                 proc_surf_flags=proc_surf_flags,
                 post_structural_flags=post_structural_flags,
@@ -724,159 +902,151 @@ async def run_mica_pipeline(data: dict):
                 dwi_flags=dwi_flags,
                 sc_flags=sc_flags,
             )
-        def join_tokens(tokens: list[str]) -> str:
-        # 각 토큰을 shlex.quote로 감싸 안전하게 공백/특수문자 처리
-            return " ".join(shlex.quote(t) for t in tokens if t is not None and str(t) != "")
 
-        # 컨테이너 내부 경로를 호스트 경로로 변환
-        def convert_to_host_path(container_path: str) -> str:
-            """컨테이너 경로를 호스트 경로로 변환"""
-            if container_path.startswith("/app/data"):
-                return container_path.replace("/app/data", host_data_dir)
-            return container_path
-        
-        # 호스트 경로로 변환
-        host_bids_dir = convert_to_host_path(bids_dir)
-        host_output_dir = convert_to_host_path(output_dir)
-        host_fs_licence = convert_to_host_path(fs_licence)
-        
-        if not subject_id:
-            raise HTTPException(status_code=400, detail="subject_id is required")
-        
-        if not processes:
-            raise HTTPException(status_code=400, detail="At least one process must be selected")
-        
-        # 출력 디렉토리 생성
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        
-        # 전체 Subject 실행 여부 확인
+        # =========================
+        # 전체 Subject 실행 (ALL)
+        # =========================
         if subject_id.lower() == "all":
-            # BIDS 디렉토리에서 모든 subject 찾기
             bids_path = Path(bids_dir)
             if not bids_path.exists():
                 raise HTTPException(status_code=404, detail=f"BIDS directory not found: {bids_dir}")
             
             subjects = [d.name for d in bids_path.iterdir() 
-                       if d.is_dir() and d.name.startswith("sub-") and d.name != "__MACOSX"]
-            
+                        if d.is_dir() and d.name.startswith("sub-") and d.name != "__MACOSX"]
             if not subjects:
                 raise HTTPException(status_code=400, detail="No subjects found in BIDS directory")
             
-            # 전체 subject 순차 실행
-            all_results = []
-            total_success = 0
-            total_failed = 0
+            all_results, total_success, total_failed = [], 0, 0
             
             for sub in subjects:
                 try:
-                    # subject ID에서 "sub-" 제거
                     sub_id = sub.replace("sub-", "")
                     
-                    # Session 자동 감지 (session_id가 없을 때)
-                    sessions_to_process = []
+                    # 세션 목록 수집
                     if session_id:
-                        # 명시적으로 session이 지정된 경우
                         sessions_to_process = [session_id]
                     else:
-                        # Session 자동 감지
-                        subject_path = Path(bids_dir) / sub
+                        # bids_dir가 컨테이너 경로인지 호스트 경로인지 확인
+                        if bids_dir.startswith('/app/data/'):
+                            check_bids_dir = bids_dir.replace('/app/data/', f'{host_data_dir}/')
+                        else:
+                            check_bids_dir = bids_dir
+                        
+                        subject_path = Path(check_bids_dir) / sub
                         if subject_path.exists():
-                            # ses-* 디렉토리 찾기
                             session_dirs = [d.name.replace("ses-", "") for d in subject_path.iterdir() 
-                                          if d.is_dir() and d.name.startswith("ses-")]
-                            if session_dirs:
-                                sessions_to_process = session_dirs
-                            else:
-                                # session이 없는 경우 (빈 문자열로 처리)
-                                sessions_to_process = [""]
+                                            if d.is_dir() and d.name.startswith("ses-")]
+                            sessions_to_process = session_dirs if session_dirs else [""]
                         else:
                             sessions_to_process = [""]
-                    
-                    # 각 session별로 실행
+
                     for ses in sessions_to_process:
-                        # 컨테이너 이름 생성
-                        container_name = f"{sub}"
-                        if ses:
-                            container_name += f"_ses-{ses}"
+                        container_name = f"{sub}" + (f"_ses-{ses}" if ses else "")
                         if processes:
                             container_name += f"_{processes[0]}"
-                        
-                        # 로그 디렉토리 생성 (호스트 경로로 생성 - micapipe가 접근 가능)
-                        host_log_dir = Path(host_output_dir) / "logs" / processes[0] if processes else Path(host_output_dir) / "logs"
-                        
-                        # 컨테이너 내부에서 호스트 경로로 디렉토리 생성 (볼륨 마운트를 통해)
-                        container_log_dir = Path(output_dir) / "logs" / processes[0] if processes else Path(output_dir) / "logs"
+
+                        container_log_dir = Path(output_dir) / "logs" / (processes[0] if processes else "")
                         container_log_dir.mkdir(parents=True, exist_ok=True)
                         (container_log_dir / "fin").mkdir(exist_ok=True)
                         (container_log_dir / "error").mkdir(exist_ok=True)
-                        
-                        # 로그 파일 경로 (컨테이너 내부 경로 - shell redirection용)
+
                         container_log_file = container_log_dir / "fin" / f"{container_name}.log"
                         container_error_log_file = container_log_dir / "error" / f"{container_name}_error.log"
-                        
-                        # 프로세스 플래그 (하이픈 하나)
-                        base_switches = [f"-{p}" for p in processes]
-                        extra_tokens = (
-                            (proc_structural_flags or []) +
-                            (proc_surf_flags or []) +
-                            (post_structural_flags or []) +
-                            (proc_func_flags or []) +
-                            (dwi_flags or []) +
-                            (sc_flags or [])
-                        )
-                        process_flags = join_tokens(base_switches + extra_tokens)
 
-                        
-                        # FreeSurfer 라이센스 파일이 있는지 확인 (컨테이너 경로로)
-                        fs_licence_mount = ""
-                        if Path(fs_licence).exists():
-                            fs_licence_mount = f"-v {host_fs_licence}:{host_fs_licence}"
-                        
-                        # micapipe 명령어 생성 (호스트 경로 사용)
-                        cmd = f"docker run --rm --name {container_name} " \
-                              f"-v {host_bids_dir}:{host_bids_dir} " \
-                              f"-v {host_output_dir}:{host_output_dir} "
-                        
-                        if fs_licence_mount:
-                            cmd += f"{fs_licence_mount} "
-                        
-                        cmd += f"micalab/micapipe:v0.2.3 " \
-                               f"-bids {host_bids_dir} " \
-                               f"-out {host_output_dir} " \
-                               f"-sub {sub_id} "
-                        
-                        if ses:  # ses 변수 사용 (자동 감지된 session)
-                            cmd += f"-ses {ses} "
-                        
-                        if fs_licence_mount:
-                            cmd += f"-fs_licence {host_fs_licence} "
-                        
-                        cmd += f"-threads {threads} " \
-                               f"{process_flags} " \
-                               f"-freesurfer {'TRUE' if freesurfer else 'FALSE'} " \
-                               f"> {container_log_file} 2> {container_error_log_file}"
-                        
-                        # 백그라운드로 실행
+                        # ---- 분기: 미니멀 vs 일반 ----
+                        if simple_structural:
+                            use_fs_licence_min = Path(fs_licence).exists() and ('proc_structural' in processes)
+
+                            # docker run 볼륨 마운트
+                            cmd = (
+                                f"docker run --rm --name {container_name} "
+                                f"-v {host_bids_dir}:{host_bids_dir} "
+                                f"-v {host_output_dir}:{host_output_dir} "
+                            )
+                            if use_fs_licence_min:
+                                cmd += f"-v {host_fs_licence}:{host_fs_licence} "
+
+                            cmd += (
+                                "micalab/micapipe:v0.2.3 "
+                                f"-bids {host_bids_dir} "
+                                f"-out {host_output_dir} "
+                                f"-sub {sub_id} "
+                            )
+                            if ses:  # ses 변수 사용
+                                cmd += f"-ses {ses} "
+
+                            cmd += "-proc_structural "
+                            if use_fs_licence_min:
+                                cmd += f"-fs_licence {host_fs_licence} "
+
+                            cmd += f"> {container_log_file} 2> {container_error_log_file}"
+                        else:
+                            # 일반: 여러 프로세스 조합
+                            base_switches = [f"-{p}" for p in processes]
+
+                            # 옵션 플래그: post_structural + func + dwi + sc (struct/surf 옵션은 생략)
+                            extra_tokens = (
+                                #(proc_structural_flags or []) + 
+                                #(proc_surf_flags or []) + 
+                                (post_structural_flags or []) +
+                                (proc_func_flags or []) +
+                                (dwi_flags or []) +
+                                (sc_flags or [])
+                            )
+                            normalized = normalize_flags(extra_tokens)
+                            process_flags = join_tokens(base_switches + normalized)
+
+                            use_fs_licence = Path(fs_licence).exists() and (
+                                ('proc_structural' in processes) or
+                                ('proc_surf' in processes and freesurfer)
+                            )
+
+                            fs_licence_mount = ""
+                            if use_fs_licence:
+                                fs_licence_mount = f"-v {host_fs_licence}:{host_fs_licence}"
+
+                            cmd = (
+                                f"docker run --rm --name {container_name} "
+                                f"-v {host_bids_dir}:{host_bids_dir} "
+                                f"-v {host_output_dir}:{host_output_dir} "
+                            )
+                            if fs_licence_mount:
+                                cmd += f"{fs_licence_mount} "
+
+                            cmd += (
+                                "micalab/micapipe:v0.2.3 "
+                                f"-bids {host_bids_dir} "
+                                f"-out {host_output_dir} "
+                                f"-sub {sub_id} "
+                            )
+                            if ses:
+                                cmd += f"-ses {ses} "
+
+                            cmd += f"-threads {threads} {process_flags} "
+
+                            if 'proc_surf' in processes:
+                                cmd += f"-freesurfer {'TRUE' if freesurfer else 'FALSE'} "
+
+                            # 라이선스는 위 조건(use_fs_licence)일 때 항상 넘김
+                            if use_fs_licence:
+                                cmd += f"-fs_licence {host_fs_licence} "
+
+                            cmd += f"> {container_log_file} 2> {container_error_log_file}"
+
+                        # 실행
                         process = subprocess.Popen(
-                            cmd,
-                            shell=True,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            text=True
+                            cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
                         )
-                        
-                        # DB에 로그 저장 (시작 시점 기록)
+
+                        # DB 기록
                         db_session = SessionLocal()
                         try:
-                            # CommandLog 저장
                             log = CommandLog(
                                 command=cmd,
                                 output=f"Container started: {container_name} (PID: {process.pid})",
                                 error=""
                             )
                             db_session.add(log)
-                            
-                            # MicaPipelineJob 저장
                             mica_job = MicaPipelineJob(
                                 job_id=container_name,
                                 subject_id=sub,
@@ -893,10 +1063,8 @@ async def run_mica_pipeline(data: dict):
                             db_session.commit()
                         finally:
                             db_session.close()
-                        
-                        # 백그라운드 실행이므로 일단 성공으로 처리
+
                         total_success += 1
-                        
                         subject_with_session = f"{sub}" + (f"_ses-{ses}" if ses else "")
                         all_results.append({
                             "subject": subject_with_session,
@@ -906,7 +1074,7 @@ async def run_mica_pipeline(data: dict):
                             "job_id": container_name,
                             "message": "백그라운드에서 시작됨"
                         })
-                    
+
                 except Exception as e:
                     total_failed += 1
                     all_results.append({
@@ -926,107 +1094,143 @@ async def run_mica_pipeline(data: dict):
                 "timestamp": datetime.now().isoformat(),
                 "message": f"✅ {total_success}개의 컨테이너가 백그라운드에서 시작되었습니다. (실패: {total_failed}개)\n\n💡 '로그 확인' 탭에서 실행 상태를 확인하세요."
             }
-        
+
+        # =========================
+        # 단일 Subject 실행
+        # =========================
         else:
-            # 단일 Subject 실행
-            # subject ID에서 "sub-" 제거
             sub_id = subject_id.replace("sub-", "")
             
-            # Session 자동 감지 (session_id가 없을 때)
+            # 세션 자동 감지
             actual_session = session_id
             if not session_id:
-                # Session 자동 감지
-                subject_path = Path(bids_dir) / subject_id
+                # bids_dir가 컨테이너 경로인지 호스트 경로인지 확인
+                # 컨테이너 경로(/app/data)면 호스트 경로로 변환
+                if bids_dir.startswith('/app/data/'):
+                    check_bids_dir = bids_dir.replace('/app/data/', f'{host_data_dir}/')
+                else:
+                    # 이미 호스트 경로인 경우 그대로 사용
+                    check_bids_dir = bids_dir
+                
+                subject_path = Path(check_bids_dir) / subject_id
+                print(f"[Backend] Checking for sessions in: {subject_path}")
+                
                 if subject_path.exists():
-                    # ses-* 디렉토리 찾기
                     session_dirs = [d.name.replace("ses-", "") for d in subject_path.iterdir() 
-                                  if d.is_dir() and d.name.startswith("ses-")]
+                                    if d.is_dir() and d.name.startswith("ses-")]
                     if session_dirs:
-                        # 첫 번째 session 자동 선택
                         actual_session = session_dirs[0]
+                        print(f"[Backend] ✅ Auto-detected session: {actual_session}")
+                    else:
+                        print(f"[Backend] ⚠️ No session directories found in: {subject_path}")
+                else:
+                    print(f"[Backend] ⚠️ Warning: Subject path not found: {subject_path}")
             
-            # 컨테이너 이름 생성
-            container_name = f"{subject_id}"
-            if actual_session:
-                container_name += f"_ses-{actual_session}"
+            container_name = f"{subject_id}" + (f"_ses-{actual_session}" if actual_session else "")
             if processes:
                 container_name += f"_{processes[0]}"
-            
-            # 로그 디렉토리 생성 (호스트 경로로 생성 - micapipe가 접근 가능)
-            host_log_dir = Path(host_output_dir) / "logs" / processes[0] if processes else Path(host_output_dir) / "logs"
-            
-            # 컨테이너 내부에서 호스트 경로로 디렉토리 생성 (볼륨 마운트를 통해)
-            container_log_dir = Path(output_dir) / "logs" / processes[0] if processes else Path(output_dir) / "logs"
+
+            container_log_dir = Path(output_dir) / "logs" / (processes[0] if processes else "")
             container_log_dir.mkdir(parents=True, exist_ok=True)
             (container_log_dir / "fin").mkdir(exist_ok=True)
             (container_log_dir / "error").mkdir(exist_ok=True)
-            
-            # 로그 파일 경로 (컨테이너 내부 경로 - shell redirection용)
+
             container_log_file = container_log_dir / "fin" / f"{container_name}.log"
             container_error_log_file = container_log_dir / "error" / f"{container_name}_error.log"
-            
-            # 프로세스 플래그 (하이픈 하나)
-            base_switches = [f"-{p}" for p in processes]
-            extra_tokens = (
-                (proc_structural_flags or []) +
-                (proc_surf_flags or []) +
-                (post_structural_flags or []) +
-                (proc_func_flags or []) +
-                (dwi_flags or []) +
-                (sc_flags or [])
-            )
-            process_flags = join_tokens(base_switches + extra_tokens)
 
-            # FreeSurfer 라이센스 파일이 있는지 확인 (컨테이너 경로로)
-            fs_licence_mount = ""
-            if Path(fs_licence).exists():
-                fs_licence_mount = f"-v {host_fs_licence}:{host_fs_licence}"
-            
-            # micapipe 명령어 생성 (호스트 경로 사용)
-            cmd = f"docker run --rm --name {container_name} " \
-                  f"-v {host_bids_dir}:{host_bids_dir} " \
-                  f"-v {host_output_dir}:{host_output_dir} "
-            
-            if fs_licence_mount:
-                cmd += f"{fs_licence_mount} "
-            
-            cmd += f"micalab/micapipe:v0.2.3 " \
-                   f"-bids {host_bids_dir} " \
-                   f"-out {host_output_dir} " \
-                   f"-sub {sub_id} "
-            
-            if actual_session:  # 자동 감지된 session 사용
-                cmd += f"-ses {actual_session} "
-            
-            if fs_licence_mount:
-                cmd += f"-fs_licence {host_fs_licence} "
-            
-            cmd += f"-threads {threads} " \
-                   f"{process_flags} " \
-                   f"-freesurfer {'TRUE' if freesurfer else 'FALSE'} " \
-                   f"> {container_log_file} 2> {container_error_log_file}"
-            
-            # 명령 실행 (백그라운드로 실행하고 즉시 반환)
+            # ---- 분기: 미니멀 vs 일반 ----
+            if simple_structural:
+                use_fs_licence_min = Path(fs_licence).exists() and ('proc_structural' in processes)
+
+                # docker run 볼륨 마운트
+                cmd = (
+                    f"docker run --rm --name {container_name} "
+                    f"-v {host_bids_dir}:{host_bids_dir} "
+                    f"-v {host_output_dir}:{host_output_dir} "
+                )
+                if use_fs_licence_min:
+                    cmd += f"-v {host_fs_licence}:{host_fs_licence} "
+
+                cmd += (
+                    "micalab/micapipe:v0.2.3 "
+                    f"-bids {host_bids_dir} "
+                    f"-out {host_output_dir} "
+                    f"-sub {sub_id} "
+                )
+                if actual_session:  # 또는 ses
+                    cmd += f"-ses {actual_session} "
+
+                cmd += "-proc_structural "
+                if use_fs_licence_min:
+                    cmd += f"-fs_licence {host_fs_licence} "
+
+                cmd += f"> {container_log_file} 2> {container_error_log_file}"
+            else:
+                # 일반
+                base_switches = [f"-{p}" for p in processes]
+
+                extra_tokens = (
+                    #(proc_structural_flags or []) + 
+                    #(proc_surf_flags or []) + 
+                    (post_structural_flags or []) +
+                    (proc_func_flags or []) +
+                    (dwi_flags or []) +
+                    (sc_flags or [])
+                )
+                normalized = normalize_flags(extra_tokens)
+                process_flags = join_tokens(base_switches + normalized)
+
+                use_fs_licence = Path(fs_licence).exists() and (
+                    ('proc_structural' in processes) or
+                    ('proc_surf' in processes and freesurfer)
+                )
+
+                fs_licence_mount = ""
+                if use_fs_licence:
+                    fs_licence_mount = f"-v {host_fs_licence}:{host_fs_licence}"
+
+                cmd = (
+                    f"docker run --rm --name {container_name} "
+                    f"-v {host_bids_dir}:{host_bids_dir} "
+                    f"-v {host_output_dir}:{host_output_dir} "
+                )
+                if fs_licence_mount:
+                    cmd += f"{fs_licence_mount} "
+
+                cmd += (
+                    "micalab/micapipe:v0.2.3 "
+                    f"-bids {host_bids_dir} "
+                    f"-out {host_output_dir} "
+                    f"-sub {sub_id} "
+                )
+                if actual_session:
+                    cmd += f"-ses {actual_session} "
+
+                cmd += f"-threads {threads} {process_flags} "
+
+                if 'proc_surf' in processes:
+                    cmd += f"-freesurfer {'TRUE' if freesurfer else 'FALSE'} "
+
+                # 라이선스는 위 조건(use_fs_licence)일 때 항상 넘김
+                if use_fs_licence:
+                    cmd += f"-fs_licence {host_fs_licence} "
+
+                cmd += f"> {container_log_file} 2> {container_error_log_file}"
+
+            # 실행
             process = subprocess.Popen(
-                cmd,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
+                cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
             )
             
-            # DB에 로그 저장 (시작 시점 기록)
+            # DB 기록
             session = SessionLocal()
             try:
-                # CommandLog 저장
                 log = CommandLog(
                     command=cmd,
                     output=f"Container started: {container_name} (PID: {process.pid})",
                     error=""
                 )
                 session.add(log)
-                
-                # MicaPipelineJob 저장
                 mica_job = MicaPipelineJob(
                     job_id=container_name,
                     subject_id=subject_id,
@@ -1067,8 +1271,15 @@ async def run_mica_pipeline(data: dict):
             "error": f"Command timeout after {data.get('timeout', 3600)} seconds",
             "returncode": -1
         }
+    except HTTPException:
+        # HTTPException은 그대로 전달
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
+
 
 @app.get("/mica-logs")
 async def get_mica_logs(output_dir: str = "/app/data/derivatives"):
@@ -1120,7 +1331,10 @@ async def get_mica_logs(output_dir: str = "/app/data/derivatives"):
             "count": len(logs)
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.get("/mica-log-content")
 async def get_mica_log_content(log_file: str, lines: int = 100):
@@ -1152,7 +1366,10 @@ async def get_mica_log_content(log_file: str, lines: int = 100):
             "content": "".join(content_lines)
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.get("/mica-containers")
 async def get_mica_containers():
@@ -1185,7 +1402,10 @@ async def get_mica_containers():
             "count": len(containers)
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.post("/mica-container-stop")
 async def stop_mica_container(container_name: str):
@@ -1217,7 +1437,10 @@ async def stop_mica_container(container_name: str):
             "error": "Timeout while stopping container"
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.get("/mica-jobs")
 async def get_mica_jobs(status: str = None):
@@ -1341,7 +1564,10 @@ async def get_mica_jobs(status: str = None):
         finally:
             db.close()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.post("/mica-job-update")
 async def update_mica_job_status(data: dict):
@@ -1385,14 +1611,30 @@ async def update_mica_job_status(data: dict):
         finally:
             db.close()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        print(f"ERROR in /run-mica-pipeline: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 # --- 유틸: 데이터 루트 결정 (/app/data 기본) ---
 def pick_existing_data_root() -> Path:
-    root = Path(os.getenv("HOST_DATA_DIR", "/app/data"))
-    if not (root / "derivatives").exists():
-        raise HTTPException(status_code=404, detail=f"Derivatives not found: {root / 'derivatives'}")
-    return root
+    # 여러 경로 시도 (컨테이너 내부 경로 우선)
+    possible_roots = [
+        Path("/app/data"),  # 컨테이너 내부 경로 (마운트됨)
+        Path(os.getenv("HOST_DATA_DIR", "/home/admin1/Documents/aimedpipeline/data")),  # 호스트 경로
+    ]
+    
+    for root in possible_roots:
+        derivatives_path = root / "derivatives"
+        if derivatives_path.exists():
+            return root
+    
+    # 모든 경로가 실패한 경우
+    tried_paths = [str(r / "derivatives") for r in possible_roots]
+    raise HTTPException(
+        status_code=404, 
+        detail=f"Derivatives not found. Tried: {', '.join(tried_paths)}"
+    )
 
 # --- 보안용: derivatives 바깥 접근 방지 ---
 def _ensure_inside(root: Path, target: Path) -> Path:

@@ -285,13 +285,6 @@ def render():
         with col_sp:
             st.markdown("#### Structural Processing")
             # === Structural 계열 플래그 빌더 ===
-            def build_proc_structural_flags(a: dict) -> list[str]:
-                flags = []
-                if a.get("T1wStr"):             flags += ["-T1wStr", a["T1wStr"]]
-                if a.get("uni", False):         flags += ["-uni"]
-                if a.get("mf", None) not in (None, ""):
-                    flags += ["-mf", str(a["mf"])]
-                return flags
 
             def build_proc_surf_flags(a: dict) -> list[str]:
                 flags = []
@@ -306,49 +299,15 @@ def render():
                 flags = []
                 if a.get("atlas"): flags += ["-atlas", a["atlas"]]
                 return flags
-            
-
-            proc_struct = st.checkbox("proc_structural", value=True, help="T1w 구조 영상 처리")
 
             # --- proc_structural 옵션 ---
+            proc_struct = st.checkbox("proc_structural", value=True, help="T1w 구조 영상 처리")
             proc_structural_flags = []
-            if proc_struct:
-                with st.expander("🧱 proc_structural 옵션", expanded=False):
-                    st.caption("micapipe -proc_structural 인자. 비워두면 micapipe 기본값 사용.")
-                    c1, c2 = st.columns([2,1])
-                    with c1:
-                        T1wStr_struct = st.text_input("T1wStr (str)", value="T1w.nii",
-                                                    help="사용할 T1w를 찾는 문자열 (기본: T1w.nii)")
-                    with c2:
-                        uni_struct = st.checkbox("uni (UNI-T1w reference)", value=False)
-                    mf_struct = st.number_input("mf (int)", min_value=0, max_value=100, value=3,
-                                            help="MP2RAGE denoising factor (예: 3 for 7T)")
-                    proc_structural_flags = build_proc_structural_flags({
-                        "T1wStr": T1wStr_struct, "uni": uni_struct, "mf": mf_struct
-                    })
 
             # --- proc_surf 옵션 ---
-            proc_surf = st.checkbox("proc_surf", value=True, help="Surface 재구성")
+            proc_surf = st.checkbox("proc_surf", value=False, help="Surface 재구성")
+            #use_freesurfer = st.checkbox("FreeSurfer 사용 (체크=FreeSurfer / 미체크=FastSurfer)", value=True)
             proc_surf_flags = []
-            if proc_surf:
-                with st.expander("🌊 proc_surf 옵션", expanded=False):
-                    st.caption("micapipe -proc_surf 인자")
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        T1wStr_surf = st.text_input("T1wStr (str)", value="T1w.nii")
-                        surf_dir = st.text_input("surf_dir (path)", value="", placeholder="/path/to/surf_dir")
-                        T1_native = st.text_input("T1 (path of t1nativepro)", value="", placeholder="/path/to/T1nativepro.nii.gz")
-                    with c2:
-                        freesurfer_flag = st.checkbox("freesurfer (존재 플래그)", value=False,
-                                                    help="켜면 -freesurfer 플래그가 전달됩니다")
-                        fs_licence_ui = st.text_input("fs_licence (path)", value=st.session_state.get("mica_fs_licence",""))
-                    proc_surf_flags = build_proc_surf_flags({
-                        "T1wStr": T1wStr_surf,
-                        "freesurfer": freesurfer_flag,
-                        "surf_dir": surf_dir,
-                        "fs_licence": fs_licence_ui,
-                        "T1": T1_native
-                    })
 
             post_structural = st.checkbox("post_structural", value=False, help="구조 영상 후처리")
             # --- post_structural 옵션 ---
@@ -626,7 +585,9 @@ def render():
                     subject_selection = st.selectbox(
                         "Subject ID 선택",
                         options=[""] + available_subjects,
-                        help="처리할 Subject를 선택하세요"
+                        help="처리할 Subject를 선택하세요",
+                        key="subject_selectbox",
+                        on_change=lambda: st.session_state.pop("selected_session", None)  # Subject 변경 시 Session 초기화
                     )
                 else:
                     # 직접 입력
@@ -634,16 +595,129 @@ def render():
                         "Subject ID",
                         value="",
                         placeholder="예: sub-ADNI002S1155",
-                        help="처리할 Subject ID (전체 이름)"
+                        help="처리할 Subject ID (전체 이름)",
+                        key="subject_text_input",
+                        on_change=lambda: st.session_state.pop("selected_session", None)  # Subject 변경 시 Session 초기화
                     )
             
             with col2:
-                session_id = st.text_input(
-                    "Session ID (선택)",
-                    value="",
-                    placeholder="예: ses-01",
-                    help="특정 세션만 처리 (선택사항)"
-                )
+                # Session ID 드롭다운 (Subject 선택 시 자동 업데이트)
+                # session_state에 캐싱하여 불필요한 API 호출 방지
+                cache_key = f"sessions_{subject_selection}"
+                
+                if subject_selection and subject_selection != "":
+                    # 캐시된 Session 목록이 없거나 Subject가 변경된 경우에만 API 호출
+                    if cache_key not in st.session_state or st.session_state.get("last_subject") != subject_selection:
+                        available_sessions = []
+                        error_message = None
+                        try:
+                            bids_dir = st.session_state.get("bids_directory", "/app/data/bids")
+                            with st.spinner("Session 목록 로딩 중..."):
+                                resp = requests.get(
+                                    f"{FASTAPI_SERVER_URL}/get-sessions",
+                                    params={
+                                        "subject_id": subject_selection,
+                                        "bids_dir": bids_dir
+                                    },
+                                    timeout=5
+                                )
+                                if resp.status_code == 200:
+                                    result = resp.json()
+                                    if result.get("success") and result.get("sessions"):
+                                        available_sessions = result.get("sessions", [])
+                                        st.session_state[cache_key] = available_sessions
+                                        st.session_state["last_subject"] = subject_selection
+                                        st.session_state[f"{cache_key}_error"] = None
+                                    else:
+                                        # Session이 없거나 실패한 경우
+                                        error_message = result.get("message", "Session을 찾을 수 없습니다")
+                                        st.session_state[cache_key] = []
+                                        st.session_state["last_subject"] = subject_selection
+                                        st.session_state[f"{cache_key}_error"] = error_message
+                                else:
+                                    error_message = f"API 호출 실패 (상태 코드: {resp.status_code})"
+                                    st.session_state[cache_key] = []
+                                    st.session_state["last_subject"] = subject_selection
+                                    st.session_state[f"{cache_key}_error"] = error_message
+                        except requests.exceptions.ConnectionError:
+                            error_message = "Backend 서버에 연결할 수 없습니다"
+                            st.session_state[cache_key] = []
+                            st.session_state["last_subject"] = subject_selection
+                            st.session_state[f"{cache_key}_error"] = error_message
+                        except Exception as e:
+                            error_message = f"오류: {str(e)}"
+                            st.session_state[cache_key] = []
+                            st.session_state["last_subject"] = subject_selection
+                            st.session_state[f"{cache_key}_error"] = error_message
+                    else:
+                        # 캐시에서 가져오기
+                        available_sessions = st.session_state.get(cache_key, [])
+                        error_message = st.session_state.get(f"{cache_key}_error")
+                else:
+                    available_sessions = []
+                    error_message = None
+                
+                # 드롭다운 옵션 구성
+                session_display_options = ["전체 (자동 감지)"]
+                if available_sessions:
+                    session_display_options += [
+                        f"{s['display_name']} ({s['session_id']})" 
+                        for s in available_sessions
+                    ]
+                
+                # Session 선택 UI
+                if subject_selection and subject_selection != "":
+                    if available_sessions:
+                        # Session이 있는 경우 드롭다운 표시
+                        st.caption(f"✅ {len(available_sessions)}개 Session 발견")
+                        selected_session_display = st.selectbox(
+                            "Session ID 선택",
+                            options=session_display_options,
+                            help="처리할 Session을 선택하세요 (전체 선택 시 자동 감지)",
+                            key="session_selectbox",
+                            index=0  # 기본값: "전체 (자동 감지)"
+                        )
+                        
+                        # 선택된 값에서 실제 session_id 추출
+                        if selected_session_display == "전체 (자동 감지)":
+                            session_id = ""
+                        else:
+                            # "ses-M126 (M126)" 형식에서 session_id 추출
+                            for s in available_sessions:
+                                if f"{s['display_name']} ({s['session_id']})" == selected_session_display:
+                                    session_id = s['session_id']
+                                    break
+                            else:
+                                session_id = ""
+                    else:
+                        # Session이 없거나 에러가 발생한 경우
+                        if error_message:
+                            st.caption(f"⚠️ {error_message}")
+                            with st.expander("🔍 디버깅 정보", expanded=False):
+                                st.code(f"Subject: {subject_selection}\nBIDS Dir: {st.session_state.get('bids_directory', '/app/data/bids')}\nError: {error_message}")
+                        else:
+                            st.caption("ℹ️ Session이 없거나 자동 감지됩니다")
+                        
+                        session_id = st.text_input(
+                            "Session ID (선택)",
+                            value="",
+                            placeholder="예: M126 또는 ses-M126",
+                            help="특정 세션만 처리 (선택사항, 비워두면 자동 감지)",
+                            key="session_text_input"
+                        )
+                        # "ses-" 접두사 제거
+                        if session_id:
+                            session_id = session_id.replace("ses-", "").strip()
+                else:
+                    # Subject가 선택되지 않은 경우
+                    session_id = st.text_input(
+                        "Session ID (선택)",
+                        value="",
+                        placeholder="Subject를 먼저 선택하세요",
+                        help="Subject를 선택하면 Session 목록이 표시됩니다",
+                        key="session_text_input",
+                        disabled=True
+                    )
         
         # 선택된 프로세스 저장
         selected_processes = []

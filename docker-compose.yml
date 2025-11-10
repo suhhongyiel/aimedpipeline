@@ -95,6 +95,9 @@ services:
         echo 'Creating admin user...'
         airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com 2>/dev/null || echo 'User already exists'
         
+        echo 'Resetting admin password...'
+        airflow users reset-password -u admin -p admin 2>/dev/null || echo 'Password reset failed'
+        
         echo 'Starting Airflow webserver...'
         airflow webserver -p 8080 &
         
