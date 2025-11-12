@@ -82,3 +82,4 @@ data/
 # Airflow
 airflow/@eaDir/
 airflow/logs/
+**/.nfs*
