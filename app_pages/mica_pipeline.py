@@ -602,7 +602,11 @@ def render():
 
         if proc_sc:
             selected_processes.append("SC")   
-        
+            
+        # ✅  고정 순서로 정렬 + 중복 제거
+        allowed_order = ["proc_structural", "proc_surf", "post_structural", "proc_func", "proc_dwi", "SC"]
+        selected_processes = [p for p in allowed_order if p in selected_processes]
+        selected_processes = list(dict.fromkeys(selected_processes))        
         # === 추가 설정 ===
         st.markdown("---")
         st.markdown("#### 고급 설정")
@@ -752,37 +756,54 @@ def render():
                         result = resp.json()
                         # === 실행 직후: 미리보기용 micapipe 커맨드 만들고 세션에 저장 ===
                         def _build_micapipe_preview(payload: dict) -> str:
+                            import os
                             sub = (payload.get("subject_id") or "").replace("sub-", "")
-                            ses = payload.get("session_id") or ""
-                            procs = payload.get("processes", [])
+                            ses = (payload.get("session_id") or "").replace("ses-", "")
                             threads = payload.get("threads", 4)
+                            procs = payload.get("processes", [])
+                            fs_lic = payload.get("fs_licence") or ""
 
-                            parts = [
-                                "micapipe",
-                                f"-bids {payload.get('bids_dir')}",
-                                f"-out {payload.get('output_dir')}",
-                            ]
+                            host_root = os.getenv("HOST_DATA_DIR", "/home/admin1/Documents/aimedpipeline/data")
+
+                            def to_host(p: str) -> str:
+                                if not p:
+                                    return p
+                                p = os.path.normpath(p)
+                                if p.startswith("/app/data"):
+                                    return os.path.normpath(os.path.join(host_root, p[len("/app/data"):].lstrip("/")))
+                                return p
+
+                            bids = to_host(payload.get("bids_dir"))
+                            out  = to_host(payload.get("output_dir"))
+                            fs_lic_host = to_host(fs_lic)
+
+                            parts = ["micapipe", f"-bids {bids}", f"-out {out}"]
                             if sub: parts.append(f"-sub {sub}")
                             if ses: parts.append(f"-ses {ses}")
                             parts.append(f"-threads {threads}")
 
-                            # 프로세스 플래그(-proc_func, -proc_dwi, … / SC는 -SC)
-                            parts += [("-SC" if p == "SC" else f"-{p}") for p in procs]
+                            # ✅ 프로세스 + 순서: -proc_func 다음에 토글(-NSR/-dropTR/-noFIX) 즉시 배치
+# 원하는 순서대로 배치
+                            if "proc_structural" in procs: parts.append("-proc_structural")
+                            if "proc_surf" in procs:       parts.append("-proc_surf")
+                            if "post_structural" in procs: parts.append("-post_structural")
+                            if "proc_func" in procs:
+                                parts.append("-proc_func")
+                                parts += [f for f in payload.get("proc_func_flags", []) if f in ("-NSR", "-dropTR", "-noFIX")]
+                            if "proc_dwi" in procs: parts.append("-proc_dwi")
+                            if "SC" in procs:       parts.append("-SC")
 
-                            # 세부 플래그는 그대로 붙이기(원하는 보기와 동일)
-                            parts += payload.get("post_structural_flags", [])
-                            parts += payload.get("proc_func_flags", [])
-                            parts += payload.get("dwi_flags", [])
-                            parts += payload.get("sc_flags", [])
-
+                            # ✅ 라이선스도 미리보기에 표시
+                            if fs_lic_host:
+                                parts.append(f"-fs_licence {fs_lic_host}")
                             return " ".join(parts)
-
+                        
                         # 백엔드가 command를 줄 수도 있고(직접 실행 모드),
                         # 안 줄 수도 있음(Airflow). 없으면 우리가 만든 미리보기로 대체.
-                        cmd_preview = result.get("command") or _build_micapipe_preview(payload)
-
+                        cmd_preview = _build_micapipe_preview(payload)
                         # 탭5에서 쓸 전역 저장
                         st.session_state["mica_last_cmd_preview"] = cmd_preview
+
                         # 결과 표시
                         if result.get("mode") == "all_subjects":
                             # 전체 Subject 실행 결과

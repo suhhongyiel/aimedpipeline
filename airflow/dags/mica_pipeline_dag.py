@@ -173,17 +173,16 @@ def build_docker_command(**context):
    
     # ✅ 순서 고정 및 중복 제거
     ordered_flags = []
-    if "-proc_structural" in process_switches:
-        ordered_flags.append("-proc_structural")
-    if "-proc_func" in process_switches:
+    if "-proc_structural"   in process_switches: ordered_flags.append("-proc_structural")
+    if "-proc_surf"         in process_switches: ordered_flags.append("-proc_surf")
+    if "-post_structural"   in process_switches: ordered_flags.append("-post_structural")
+    if "-proc_func"         in process_switches:
         ordered_flags.append("-proc_func")
-        # func 관련 옵션은 -proc_func 바로 뒤에 붙임
         ordered_flags += [f for f in normalized if f in ("-NSR", "-dropTR", "-noFIX")]
-    if "-proc_dwi" in process_switches:
-        ordered_flags.append("-proc_dwi")
-    if "-SC" in process_switches:
-        ordered_flags.append("-SC")  
+    if "-proc_dwi"          in process_switches: ordered_flags.append("-proc_dwi")
+    if "-SC"                in process_switches: ordered_flags.append("-SC")
     ordered_flags += [f for f in normalized if f not in ("-NSR", "-dropTR", "-noFIX")]
+
     process_flags = " ".join(ordered_flags)
   
 
