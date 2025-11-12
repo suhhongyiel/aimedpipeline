@@ -7,7 +7,7 @@ import requests
 import os
 import pandas as pd
 from utils.styles import get_custom_css
-#
+
 # === 고정 경로(도커 내부 표준) ===
 BIDS_DIR = "/app/data/bids"
 OUT_DIR  = "/app/data/derivatives"
@@ -750,7 +750,39 @@ def render():
                         )
                         resp.raise_for_status()
                         result = resp.json()
-                        
+                        # === 실행 직후: 미리보기용 micapipe 커맨드 만들고 세션에 저장 ===
+                        def _build_micapipe_preview(payload: dict) -> str:
+                            sub = (payload.get("subject_id") or "").replace("sub-", "")
+                            ses = payload.get("session_id") or ""
+                            procs = payload.get("processes", [])
+                            threads = payload.get("threads", 4)
+
+                            parts = [
+                                "micapipe",
+                                f"-bids {payload.get('bids_dir')}",
+                                f"-out {payload.get('output_dir')}",
+                            ]
+                            if sub: parts.append(f"-sub {sub}")
+                            if ses: parts.append(f"-ses {ses}")
+                            parts.append(f"-threads {threads}")
+
+                            # 프로세스 플래그(-proc_func, -proc_dwi, … / SC는 -SC)
+                            parts += [("-SC" if p == "SC" else f"-{p}") for p in procs]
+
+                            # 세부 플래그는 그대로 붙이기(원하는 보기와 동일)
+                            parts += payload.get("post_structural_flags", [])
+                            parts += payload.get("proc_func_flags", [])
+                            parts += payload.get("dwi_flags", [])
+                            parts += payload.get("sc_flags", [])
+
+                            return " ".join(parts)
+
+                        # 백엔드가 command를 줄 수도 있고(직접 실행 모드),
+                        # 안 줄 수도 있음(Airflow). 없으면 우리가 만든 미리보기로 대체.
+                        cmd_preview = result.get("command") or _build_micapipe_preview(payload)
+
+                        # 탭5에서 쓸 전역 저장
+                        st.session_state["mica_last_cmd_preview"] = cmd_preview
                         # 결과 표시
                         if result.get("mode") == "all_subjects":
                             # 전체 Subject 실행 결과
@@ -882,7 +914,17 @@ def render():
                 st.info("✅ 실행 중인 컨테이너가 없습니다")
         except Exception as e:
             st.error(f"❌ 컨테이너 정보 조회 실패: {str(e)}")
-        
+            
+        # === 🔧 명령어 미리보기(최근 실행) ===
+        st.markdown("### 🔧 명령어 미리보기")
+        _last_cmd = st.session_state.get("mica_last_cmd_preview")
+
+        if _last_cmd:
+            st.code(_last_cmd, language="bash")
+            st.caption("가장 최근에 실행한 명령어입니다.")
+        else:
+            st.info("아직 실행한 명령이 없습니다. 탭 4에서 ▶️ **실행**을 눌러 명령어를 생성하세요.")
+
         st.markdown("---")
         st.markdown("#### 📝 실행 로그")
         
@@ -943,7 +985,6 @@ def render():
                                     from datetime import datetime
                                     modified_time = datetime.fromtimestamp(log.get("modified", 0))
                                     st.metric("수정 시간", modified_time.strftime("%Y-%m-%d %H:%M:%S"))
-                                
                                 # 표준 출력 로그
                                 st.markdown("#### 📤 표준 출력 (최근 100줄)")
                                 try:
