@@ -710,23 +710,37 @@ def render():
                 st.markdown("---")
         
         # 실행 버튼
-        col1, col2, col3 = st.columns([1, 1, 2])
-        with col1:
-            if st.button("▶️ 실행", type="primary", use_container_width=True):
+        col1, col2 = st.columns([1, 1])
+        run_clicked = col1.button("▶️ 실행", type="primary", use_container_width=True)
+        refresh_clicked = col2.button("🔄 새로고침", key="refresh_status", use_container_width=True)
+
+        # 버튼 아래에 전체 폭 쓰는 출력 영역
+        output_area = st.container()
+
+        # ▶️ 실행 버튼 눌렀을 때
+        if run_clicked:
+            with output_area:
                 try:
                     with st.spinner("MICA Pipeline 실행 중..."):
                         # 사용자 정보 가져오기 (로그인한 사용자)
-                        current_user = st.session_state.get("username", st.session_state.get("mica_user", "anonymous"))
-                        user_bids_dir = st.session_state.get("bids_directory", f"/app/data/{current_user}/bids")
-                        
+                        current_user = st.session_state.get(
+                            "username",
+                            st.session_state.get("mica_user", "anonymous")
+                        )
+                        user_bids_dir = st.session_state.get(
+                            "bids_directory",
+                            f"/app/data/{current_user}/bids"
+                        )
+
                         # session_id 가져오기 (디버깅용)
                         session_id_to_send = st.session_state.get("mica_session", "")
-                        # 디버깅 정보 표시
+
+                        # 디버깅 정보 표시 (이제 전체 폭으로 출력됨)
                         st.write(f"🔍 DEBUG - Subject: {st.session_state.get('mica_subject')}")
                         st.write(f"🔍 DEBUG - Session ID from state: '{session_id_to_send}'")
                         st.write(f"🔍 DEBUG - Session ID type: {type(session_id_to_send)}")
                         st.write(f"🔍 DEBUG - Session ID is empty: {not session_id_to_send}")
-                        
+
                         payload = {
                             "bids_dir": user_bids_dir,
                             "output_dir": f"/app/data/{current_user}/derivatives",  # 사용자별 경로
@@ -744,16 +758,18 @@ def render():
                             "post_structural_flags": st.session_state.get("mica_post_structural_flags", []),
                             "proc_func_flags": st.session_state.get("mica_proc_func_flags", []),
                             "dwi_flags": st.session_state.get("mica_dwi_flags", []),
-                            "sc_flags": st.session_state.get("mica_sc_flags", [])
+                            "sc_flags": st.session_state.get("mica_sc_flags", []),
                         }
-                        
+
                         resp = requests.post(
                             f"{FASTAPI_SERVER_URL}/run-mica-pipeline",
                             json=payload,
-                            timeout=3700
+                            timeout=3700,
                         )
+                        # HTTP 에러를 잡아서 따로 처리하기 위해 raise_for_status 사용
                         resp.raise_for_status()
                         result = resp.json()
+
                         # === 실행 직후: 미리보기용 micapipe 커맨드 만들고 세션에 저장 ===
                         def _build_micapipe_preview(payload: dict) -> str:
                             import os
@@ -763,45 +779,61 @@ def render():
                             procs = payload.get("processes", [])
                             fs_lic = payload.get("fs_licence") or ""
 
-                            host_root = os.getenv("HOST_DATA_DIR", "/home/admin1/Documents/aimedpipeline/data")
+                            host_root = os.getenv(
+                                "HOST_DATA_DIR",
+                                "/home/admin1/Documents/aimedpipeline/data",
+                            )
 
                             def to_host(p: str) -> str:
                                 if not p:
                                     return p
                                 p = os.path.normpath(p)
                                 if p.startswith("/app/data"):
-                                    return os.path.normpath(os.path.join(host_root, p[len("/app/data"):].lstrip("/")))
+                                    return os.path.normpath(
+                                        os.path.join(
+                                            host_root,
+                                            p[len("/app/data"):].lstrip("/"),
+                                        )
+                                    )
                                 return p
 
                             bids = to_host(payload.get("bids_dir"))
-                            out  = to_host(payload.get("output_dir"))
+                            out = to_host(payload.get("output_dir"))
                             fs_lic_host = to_host(fs_lic)
 
                             parts = ["micapipe", f"-bids {bids}", f"-out {out}"]
-                            if sub: parts.append(f"-sub {sub}")
-                            if ses: parts.append(f"-ses {ses}")
+                            if sub:
+                                parts.append(f"-sub {sub}")
+                            if ses:
+                                parts.append(f"-ses {ses}")
                             parts.append(f"-threads {threads}")
 
                             # ✅ 프로세스 + 순서: -proc_func 다음에 토글(-NSR/-dropTR/-noFIX) 즉시 배치
-# 원하는 순서대로 배치
-                            if "proc_structural" in procs: parts.append("-proc_structural")
-                            if "proc_surf" in procs:       parts.append("-proc_surf")
-                            if "post_structural" in procs: parts.append("-post_structural")
+                            if "proc_structural" in procs:
+                                parts.append("-proc_structural")
+                            if "proc_surf" in procs:
+                                parts.append("-proc_surf")
+                            if "post_structural" in procs:
+                                parts.append("-post_structural")
                             if "proc_func" in procs:
                                 parts.append("-proc_func")
-                                parts += [f for f in payload.get("proc_func_flags", []) if f in ("-NSR", "-dropTR", "-noFIX")]
-                            if "proc_dwi" in procs: parts.append("-proc_dwi")
-                            if "SC" in procs:       parts.append("-SC")
+                                parts += [
+                                    f
+                                    for f in payload.get("proc_func_flags", [])
+                                    if f in ("-NSR", "-dropTR", "-noFIX")
+                                ]
+                            if "proc_dwi" in procs:
+                                parts.append("-proc_dwi")
+                            if "SC" in procs:
+                                parts.append("-SC")
 
                             # ✅ 라이선스도 미리보기에 표시
                             if fs_lic_host:
                                 parts.append(f"-fs_licence {fs_lic_host}")
                             return " ".join(parts)
-                        
-                        # 백엔드가 command를 줄 수도 있고(직접 실행 모드),
-                        # 안 줄 수도 있음(Airflow). 없으면 우리가 만든 미리보기로 대체.
-                        cmd_preview = _build_micapipe_preview(payload)
+
                         # 탭5에서 쓸 전역 저장
+                        cmd_preview = _build_micapipe_preview(payload)
                         st.session_state["mica_last_cmd_preview"] = cmd_preview
 
                         # 결과 표시
@@ -809,42 +841,78 @@ def render():
                             # 전체 Subject 실행 결과
                             st.markdown("---")
                             st.markdown("### 📊 전체 Subject 실행 결과")
-                            
-                            col1, col2, col3 = st.columns(3)
-                            with col1:
+
+                            mcol1, mcol2, mcol3 = st.columns(3)
+                            with mcol1:
                                 st.metric("전체 Subject", result.get("total_subjects", 0))
-                            with col2:
-                                st.metric("성공", result.get("successful", 0), 
-                                         delta=None if result.get("successful", 0) == result.get("total_subjects", 0) else "완료")
-                            with col3:
-                                st.metric("실패", result.get("failed", 0),
-                                         delta=None if result.get("failed", 0) == 0 else "오류")
-                            
+                            with mcol2:
+                                st.metric(
+                                    "성공",
+                                    result.get("successful", 0),
+                                    delta=None
+                                    if result.get("successful", 0)
+                                    == result.get("total_subjects", 0)
+                                    else "완료",
+                                )
+                            with mcol3:
+                                st.metric(
+                                    "실패",
+                                    result.get("failed", 0),
+                                    delta=None
+                                    if result.get("failed", 0) == 0
+                                    else "오류",
+                                )
+
                             if result.get("success"):
-                                st.success(f"✅ 전체 {result.get('total_subjects')}개 Subject 실행 완료!")
+                                st.success(
+                                    f"✅ 전체 {result.get('total_subjects')}개 Subject 실행 완료!"
+                                )
                             else:
-                                st.error(f"⚠️ {result.get('failed')}개 Subject 실행 실패")
-                            
+                                st.error(
+                                    f"⚠️ {result.get('failed')}개 Subject 실행 실패"
+                                )
+
                             # Subject별 상세 결과
-                            with st.expander("📋 Subject별 실행 결과 보기", expanded=not result.get("success")):
-                                for idx, sub_result in enumerate(result.get("results", []), 1):
+                            with st.expander(
+                                "📋 Subject별 실행 결과 보기",
+                                expanded=not result.get("success"),
+                            ):
+                                for idx, sub_result in enumerate(
+                                    result.get("results", []), 1
+                                ):
                                     if sub_result.get("success"):
-                                        st.success(f"{idx}. ✅ {sub_result.get('subject')} - 성공")
+                                        st.success(
+                                            f"{idx}. ✅ {sub_result.get('subject')} - 성공"
+                                        )
                                     else:
-                                        st.error(f"{idx}. ❌ {sub_result.get('subject')} - 실패 (코드: {sub_result.get('returncode', -1)})")
+                                        st.error(
+                                            f"{idx}. ❌ {sub_result.get('subject')} - 실패 "
+                                            f"(코드: {sub_result.get('returncode', -1)})"
+                                        )
                                         if sub_result.get("error_preview"):
-                                            st.text(f"   오류: {sub_result['error_preview']}")
-                        
+                                            st.text(
+                                                f"   오류: {sub_result['error_preview']}"
+                                            )
+
                         else:
                             # 단일 Subject 실행 결과
                             if result.get("success"):
-                                st.success(result.get("message", "✅ MICA Pipeline이 성공적으로 완료되었습니다!"))
+                                st.success(
+                                    result.get(
+                                        "message",
+                                        "✅ MICA Pipeline이 성공적으로 완료되었습니다!",
+                                    )
+                                )
                             else:
-                                st.error(f"❌ MICA Pipeline 실행 실패 (코드: {result.get('returncode', -1)})")
-                            
+                                st.error(
+                                    f"❌ MICA Pipeline 실행 실패 "
+                                    f"(코드: {result.get('returncode', -1)})"
+                                )
+
                             # Airflow 모드일 경우 링크 표시
                             if result.get("mode") == "airflow":
-                                st.info(f"""
+                                st.info(
+                                    f"""
                                 **🔄 Airflow로 실행됨**
                                 
                                 - **DAG Run ID:** `{result.get('dag_run_id', '-')}`
@@ -852,33 +920,56 @@ def render():
                                 - **Airflow UI:** [실행 상태 확인하기]({result.get('airflow_url', 'http://localhost:8080')})
                                 
                                 💡 Airflow UI에서 실시간 로그와 진행 상황을 확인할 수 있습니다.
-                                """)
-                            
+                                """
+                                )
+
                             # 명령어 표시 (직접 실행 모드일 때만)
                             if result.get("command"):
                                 with st.expander("실행된 명령어 보기"):
                                     st.code(result.get("command", ""), language="bash")
-                            
+
                             # 출력 표시
                             if result.get("output"):
                                 with st.expander("📤 표준 출력"):
                                     st.code(result["output"], language="text")
-                            
+
                             # 에러 표시
                             if result.get("error"):
                                 with st.expander("⚠️ 표준 에러"):
                                     st.code(result["error"], language="text")
-                                
+
+                except requests.exceptions.HTTPError as e:
+                    # 409 같은 HTTP 에러 디테일 보여주기
+                    status = e.response.status_code if e.response is not None else None
+                    detail = ""
+                    if e.response is not None:
+                        try:
+                            detail = e.response.json()
+                        except Exception:
+                            detail = e.response.text
+
+                    if status == 409:
+                        st.error(
+                            "❌ 409 Conflict: 동일한 설정으로 이미 실행 중인 작업이 있을 수 있습니다.\n"
+                            "Airflow UI에서 상태를 확인한 뒤, 완료 후 다시 실행해주세요."
+                        )
+                    else:
+                        st.error(f"❌ HTTP 오류 ({status}): {e}")
+
+                    if detail:
+                        st.error(f"서버 응답: {detail}")
+
                 except requests.exceptions.Timeout:
                     st.error("❌ 요청 시간 초과 (1시간 이상 소요)")
                 except requests.exceptions.ConnectionError:
                     st.error("❌ FastAPI 서버에 연결할 수 없습니다.")
                 except Exception as e:
-                    st.error(f"❌ 오류: {str(e)}")
-        
-        with col2:
-            if st.button("🔄 새로고침", key="refresh_status", use_container_width=True):
-                st.rerun()
+                    st.error(f"❌ 알 수 없는 오류: {str(e)}")
+
+        # 🔄 새로고침 버튼
+        if refresh_clicked:
+            st.rerun()
+
         
         # Airflow 모니터링 링크
         st.markdown("---")
