@@ -781,7 +781,7 @@ def render():
 
                             host_root = os.getenv(
                                 "HOST_DATA_DIR",
-                                "/home/admin1/Documents/aimedpipeline/data",
+                                "/private/boonam/98-dev/aimedpipeline/data",
                             )
 
                             def to_host(p: str) -> str:

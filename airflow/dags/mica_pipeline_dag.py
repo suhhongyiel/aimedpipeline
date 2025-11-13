@@ -66,7 +66,7 @@ def build_docker_command(**context):
     sc_flags = conf.get('sc_flags', [])
 
     # 호스트 경로 (Docker-in-Docker를 위한 절대 경로)
-    host_data_dir = os.getenv('HOST_DATA_DIR', '/home/admin1/Documents/aimedpipeline/data')
+    host_data_dir = os.getenv('HOST_DATA_DIR', '/private/boonam/98-dev/aimedpipeline/data')
 
     # 파라미터 추출
     subject_id = conf.get('subject_id', 'sub-001')
@@ -74,7 +74,7 @@ def build_docker_command(**context):
     processes = conf.get('processes', ['proc_structural'])
     bids_dir = conf.get('bids_dir', '/data/bids')
     output_dir = conf.get('output_dir', '/data/derivatives')
-    fs_licence = conf.get('fs_licence', '/home/admin1/Documents/aimedpipeline/data/license.txt')
+    fs_licence = conf.get('fs_licence', '/private/boonam/98-dev/aimedpipeline/data/license.txt')
     threads = conf.get('threads', 4)
     freesurfer = conf.get('freesurfer', True)
 
@@ -293,7 +293,7 @@ def log_completion(**context):
     ]
     
     # 호스트 데이터 디렉토리 (환경 변수에서 가져오기)
-    host_data_dir = os.getenv('HOST_DATA_DIR', '/home/admin1/Documents/aimedpipeline/data')
+    host_data_dir = os.getenv('HOST_DATA_DIR', '/private/boonam/98-dev/aimedpipeline/data')
     
     # 로그 경로 목록 (fin / error 디렉토리 모두 확인)
     log_dirs = [

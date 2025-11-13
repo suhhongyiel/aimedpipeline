@@ -1455,6 +1455,20 @@ async def get_mica_logs(output_dir: str = "/app/data/derivatives"):
                 "message": "로그 디렉토리가 아직 생성되지 않았습니다."
             }
         
+        # 로그 안에서 에러로 간주할 키워드들
+        error_keywords = [
+            "[ ERROR ]",       # micapipe 기본 에러 포맷
+            "ERROR",
+            "Error",
+            "Exception",
+            "FAILED",
+            "Failed",
+        ]
+        # 무시해야 하는 에러 키워드들
+        ignore_error_keywords = [
+            "realpath: invalid option -- 'f'",
+            "Try 'realpath --help' for more information"
+        ]
         logs = []
         
         # 각 프로세스 디렉토리 순회
@@ -1464,24 +1478,50 @@ async def get_mica_logs(output_dir: str = "/app/data/derivatives"):
             
             process_name = process_dir.name
             
-            # fin 디렉토리의 로그 파일
             fin_dir = process_dir / "fin"
             error_dir = process_dir / "error"
             
             if fin_dir.exists():
                 for log_file in fin_dir.iterdir():
-                    if log_file.is_file() and log_file.suffix == ".log":
-                        error_file = error_dir / f"{log_file.stem}_error.log"
-                        
-                        logs.append({
-                            "process": process_name,
-                            "subject": log_file.stem,
-                            "log_file": str(log_file),
-                            "error_file": str(error_file) if error_file.exists() else None,
-                            "size": log_file.stat().st_size,
-                            "modified": log_file.stat().st_mtime,
-                            "has_error": error_file.exists() and error_file.stat().st_size > 0
-                        })
+                    if not (log_file.is_file() and log_file.suffix == ".log"):
+                        continue
+                    
+                    error_file = error_dir / f"{log_file.stem}_error.log"
+                    
+                    # 1차: 에러 로그 파일 크기로 판단
+                    has_error = error_file.exists() and error_file.stat().st_size > 0
+                    
+                    # ── ignore rule 적용 1: 에러 파일 안에서 무시 가능한 에러인지 확인 ──
+                    if has_error and error_file.exists():
+                        try:
+                            with error_file.open("r", errors="ignore") as f:
+                                err_content = f.read()
+                            if any(kw in err_content for kw in ignore_error_keywords):
+                                has_error = False
+                        except:
+                            pass
+                    # 2차: 에러 파일이 비어 있으면 메인 로그 내용에서 [ ERROR ] 등 검색
+                    if not has_error:
+                        try:
+                            # 너무 큰 파일 대비해서 끝부분만 읽기 (마지막 4000자 정도)
+                            with log_file.open("r", encoding="utf-8", errors="ignore") as f:
+                                tail = f.read()[-4000:]
+                            
+                            if any(kw in tail for kw in error_keywords):
+                                has_error = True
+                        except Exception:
+                            # 로그 읽기 실패하면 여기서 추가 처리 없이 패스
+                            pass
+                    
+                    logs.append({
+                        "process": process_name,
+                        "subject": log_file.stem,
+                        "log_file": str(log_file),
+                        "error_file": str(error_file) if error_file.exists() else None,
+                        "size": log_file.stat().st_size,
+                        "modified": log_file.stat().st_mtime,
+                        "has_error": has_error,
+                    })
         
         # 수정 시간 기준 내림차순 정렬
         logs.sort(key=lambda x: x["modified"], reverse=True)
