@@ -238,11 +238,22 @@ def build_docker_command(**context):
         ]
 
         if 'proc_surf' in processes:
-            cmd_parts.append(f"-freesurfer {'TRUE' if freesurfer else 'FALSE'}")
+            #cmd_parts.append(f"-freesurfer {'TRUE' if freesurfer else 'FALSE'}")
+            cmd_parts.append(f"-freesurfer ")
+
 
         # 라이선스 인자는 항상 추가
         if must_mount_fs_licence:
             cmd_parts.append(f"-fs_licence {fs_licence}")
+        
+        if 'proc_surf' in processes:
+            t1_base_dir = f"{output_dir}/micapipe_v0.2.0/sub-{sub_id}"
+            if session_id:
+                t1_path = f"{t1_base_dir}/ses-{session_id}/anat/sub-{sub_id}_ses-{session_id}_space-nativepro_T1w.nii.gz"
+            else:
+                t1_path = f"{t1_base_dir}/anat/sub-{sub_id}_space-nativepro_T1w.nii.gz"
+            cmd_parts.append(f"-T1 {t1_path}")    
+        
 
     # 로그 디렉토리 생성 (Airflow 컨테이너 내부 경로)
     mkdir_cmd = f"mkdir -p {container_log_base}/fin {container_log_base}/error"
