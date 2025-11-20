@@ -722,11 +722,20 @@ async def run_mica_via_airflow(
 ):
     """Airflow DAG를 트리거하여 MICA Pipeline을 실행합니다."""
     try:
-        # DAG Run ID 생성
-        run_id = f"mica_{subject_id.replace('sub-', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # ✅ DAG Run ID 생성: Subject + Session + 타임스탬프로 고유하게 생성
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:22]  # 마이크로초까지 포함
+        sub_clean = subject_id.replace('sub-', '')
+        
+        # Session이 있으면 포함, 없으면 "nosession"으로 표시
+        if session_id:
+            ses_clean = session_id.replace('ses-', '')
+            run_id = f"mica_{sub_clean}_ses{ses_clean}_{timestamp}"
+        else:
+            run_id = f"mica_{sub_clean}_nosession_{timestamp}"
         
         # 디버깅: Airflow로 전달할 session_id 확인
         print(f"🔍 DEBUG (run_mica_via_airflow) - session_id: '{session_id}' (type: {type(session_id)})")
+        print(f"🔍 DEBUG (run_mica_via_airflow) - Generated run_id: '{run_id}'")
         
         # Airflow API 페이로드
         payload = {
@@ -947,7 +956,105 @@ async def run_mica_pipeline(data: dict):
             print(f"🔍 DEBUG (backend) - host_data_dir: {host_data_dir}")
             print(f"🔍 DEBUG (backend) - subject_id: {subject_id}")
             print(f"🔍 DEBUG (backend) - use_airflow: {use_airflow}")
-            
+
+            # ---- (1) 전체 Subject + Airflow 모드 처리 ----
+            if subject_id and subject_id.lower() == "all":
+                # 1) BIDS 루트 경로 결정 (스캔용)
+                #    - 컨테이너 경로면 host_bids_dir 사용
+                #    - 아니면 그대로 사용
+                if bids_dir.startswith("/app/data/"):
+                    # /app/data/{user}/bids -> /private/.../data/{user}/bids
+                    check_bids_dir = host_bids_dir  # 이미 위에서 host_data_dir + "/bids" 로 정의돼 있을 것
+                else:
+                    check_bids_dir = bids_dir
+
+                bids_path = Path(check_bids_dir)
+                if not bids_path.exists():
+                    # 호스트에 없으면 컨테이너 경로도 한 번 더 확인
+                    container_bids = Path(f"/app/data/{user}/bids")
+                    if container_bids.exists():
+                        bids_path = container_bids
+                    else:
+                        raise HTTPException(
+                            status_code=404,
+                            detail=(
+                                "BIDS directory not found. "
+                                f"host: {check_bids_dir}, container: {container_bids}"
+                            )
+                        )
+
+                # 2) subject 목록 수집
+                subjects = [
+                    d for d in bids_path.iterdir()
+                    if d.is_dir() and d.name.startswith("sub-") and d.name != "__MACOSX"
+                ]
+                if not subjects:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"No subjects found in BIDS directory: {bids_path}"
+                    )
+
+                all_results, total_success, total_failed = [], 0, 0
+                total_sessions = 0
+                commands = []
+
+                # 3) 각 subject에 대해 ses-* 디렉토리 찾기
+                for sub_dir in subjects:
+                    sub_name = sub_dir.name  # "sub-XXXX"
+
+                    session_dirs = [
+                        d for d in sub_dir.iterdir()
+                        if d.is_dir() and d.name.startswith("ses-")
+                    ]
+
+                    # 세션이 있으면 그만큼, 없으면 "" 하나만
+                    target_sessions = (
+                        [d.name.replace("ses-", "") for d in session_dirs]
+                        if session_dirs else [""]
+                    )
+
+                    # 4) (subject, session) 조합마다 Airflow DAG run 생성
+                    for ses_id in target_sessions:
+                        result = await run_mica_via_airflow(
+                            subject_id=sub_name,
+                            session_id=ses_id,  # ""이면 세션 없는 subject
+                            processes=processes,
+                            bids_dir=host_data_dir + "/bids",        # Airflow용은 host 경로 고정
+                            output_dir=host_data_dir + "/derivatives",
+                            fs_licence=fs_licence_host,
+                            threads=threads,
+                            freesurfer=freesurfer,
+                            user=user,
+                            proc_structural_flags=proc_structural_flags,
+                            proc_surf_flags=proc_surf_flags,
+                            post_structural_flags=post_structural_flags,
+                            proc_func_flags=proc_func_flags,
+                            dwi_flags=dwi_flags,
+                            sc_flags=sc_flags,
+                        )
+
+                        # 요약 정보에 subject/session 같이 넣어주기
+                        all_results.append({
+                            "subject": sub_name,
+                            "session": ses_id,
+                            **result,   # run_mica_via_airflow 가 돌려준 필드들 병합
+                        })
+                        total_sessions += 1
+
+                # 5) 전체 summary 반환
+                return {
+                    "success": True,
+                    "mode": "all_subjects_airflow",
+                    "results": all_results,
+                    "total_subjects": len(subjects),
+                    "total_sessions": total_sessions,
+                    "processes": processes,
+                    "message": (
+                        f"✅ {len(subjects)}개 subject, {total_sessions}개 (sub, ses) 조합에 대해 "
+                        "Airflow DAG Run이 생성되었습니다."
+                    ),
+                }
+
             # session_id가 빈 문자열이면 모든 세션에 대해 별도 작업 생성
             if not session_id or session_id == "":
                 print(f"🔍 DEBUG - session_id is empty, attempting to detect sessions...")
@@ -1068,9 +1175,18 @@ async def run_mica_pipeline(data: dict):
         # 전체 Subject 실행 (ALL)
         # =========================
         if subject_id.lower() == "all":
-            bids_path = Path(bids_dir)
+            # BIDS 루트는 host_bids_dir 를 우선 사용
+            if bids_dir.startswith("/app/data/"):
+                check_bids_dir = host_bids_dir      # /private/.../data/{user}/bids
+            else:
+                check_bids_dir = bids_dir
+
+            bids_path = Path(check_bids_dir)
             if not bids_path.exists():
-                raise HTTPException(status_code=404, detail=f"BIDS directory not found: {bids_dir}")
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"BIDS directory not found: {check_bids_dir}"
+                )
             
             subjects = [d.name for d in bids_path.iterdir() 
                         if d.is_dir() and d.name.startswith("sub-") and d.name != "__MACOSX"]
@@ -1089,11 +1205,12 @@ async def run_mica_pipeline(data: dict):
                     else:
                         # bids_dir가 컨테이너 경로인지 호스트 경로인지 확인
                         if bids_dir.startswith('/app/data/'):
-                            check_bids_dir = bids_dir.replace('/app/data/', f'{host_data_dir}/')
+                            check_bids_dir = host_bids_dir
                         else:
                             check_bids_dir = bids_dir
                         
                         subject_path = Path(check_bids_dir) / sub
+                        
                         if subject_path.exists():
                             session_dirs = [d.name.replace("ses-", "") for d in subject_path.iterdir() 
                                             if d.is_dir() and d.name.startswith("ses-")]
@@ -1193,7 +1310,8 @@ async def run_mica_pipeline(data: dict):
                                 cmd += f"-fs_licence {host_fs_licence} "
 
                             cmd += f"> {container_log_file} 2> {container_error_log_file}"
-
+                        # 명령어 리스트 추가
+                        commands.append(cmd)
                         # 실행
                         process = subprocess.Popen(
                             cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
@@ -1233,7 +1351,8 @@ async def run_mica_pipeline(data: dict):
                             "container_name": container_name,
                             "pid": process.pid,
                             "job_id": container_name,
-                            "message": "백그라운드에서 시작됨"
+                            "message": "백그라운드에서 시작됨",
+                            "command": cmd
                         })
 
                 except Exception as e:
@@ -1251,6 +1370,7 @@ async def run_mica_pipeline(data: dict):
                 "successful": total_success,
                 "failed": total_failed,
                 "results": all_results,
+                "commands": commands,
                 "processes": processes,
                 "timestamp": datetime.now().isoformat(),
                 "message": f"✅ {total_success}개의 컨테이너가 백그라운드에서 시작되었습니다. (실패: {total_failed}개)\n\n💡 '로그 확인' 탭에서 실행 상태를 확인하세요."
@@ -1268,7 +1388,7 @@ async def run_mica_pipeline(data: dict):
                 # bids_dir가 컨테이너 경로인지 호스트 경로인지 확인
                 # 컨테이너 경로(/app/data)면 호스트 경로로 변환
                 if bids_dir.startswith('/app/data/'):
-                    check_bids_dir = bids_dir.replace('/app/data/', f'{host_data_dir}/')
+                    check_bids_dir = host_bids_dir
                 else:
                     # 이미 호스트 경로인 경우 그대로 사용
                     check_bids_dir = bids_dir
