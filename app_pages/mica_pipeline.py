@@ -831,113 +831,52 @@ def render():
                             if fs_lic_host:
                                 parts.append(f"-fs_licence {fs_lic_host}")
                             return " ".join(parts)
-
+                        
                         # 탭5에서 쓸 전역 저장
-                        cmd_preview = _build_micapipe_preview(payload)
-                        st.session_state["mica_last_cmd_preview"] = cmd_preview
-
-                        # 결과 표시
-                        if result.get("mode") == "all_subjects":
-                            # 전체 Subject 실행 결과
-                            st.markdown("---")
-                            st.markdown("### 📊 전체 Subject 실행 결과")
-
-                            mcol1, mcol2, mcol3 = st.columns(3)
-                            with mcol1:
-                                st.metric("전체 Subject", result.get("total_subjects", 0))
-                            with mcol2:
-                                st.metric(
-                                    "성공",
-                                    result.get("successful", 0),
-                                    delta=None
-                                    if result.get("successful", 0)
-                                    == result.get("total_subjects", 0)
-                                    else "완료",
-                                )
-                            with mcol3:
-                                st.metric(
-                                    "실패",
-                                    result.get("failed", 0),
-                                    delta=None
-                                    if result.get("failed", 0) == 0
-                                    else "오류",
-                                )
-
-                            if result.get("success"):
-                                st.success(
-                                    f"✅ 전체 {result.get('total_subjects')}개 Subject 실행 완료!"
-                                )
-                            else:
-                                st.error(
-                                    f"⚠️ {result.get('failed')}개 Subject 실행 실패"
-                                )
-
-                            # Subject별 상세 결과
-                            with st.expander(
-                                "📋 Subject별 실행 결과 보기",
-                                expanded=not result.get("success"),
-                            ):
-                                for idx, sub_result in enumerate(
-                                    result.get("results", []), 1
-                                ):
-                                    if sub_result.get("success"):
-                                        st.success(
-                                            f"{idx}. ✅ {sub_result.get('subject')} - 성공"
-                                        )
-                                    else:
-                                        st.error(
-                                            f"{idx}. ❌ {sub_result.get('subject')} - 실패 "
-                                            f"(코드: {sub_result.get('returncode', -1)})"
-                                        )
-                                        if sub_result.get("error_preview"):
-                                            st.text(
-                                                f"   오류: {sub_result['error_preview']}"
-                                            )
+                         # 2) === 전체 Subject 실행의 경우: 각 결과별로 명령어 생성 ===
+                        if result.get("mode") == "all_subjects_airflow":
+                            # 모든 Subject/Session 조합의 명령어를 저장
+                            all_commands = []
+                            for res in result.get("results", []):
+                                # 각 결과마다 개별 payload 생성
+                                individual_payload = payload.copy()
+                                individual_payload["subject_id"] = res.get("subject")
+                                individual_payload["session_id"] = res.get("session", "")
+                                cmd = _build_micapipe_preview(individual_payload)
+                                all_commands.append({
+                                    "subject": res.get("subject"),
+                                    "session": res.get("session", "전체"),
+                                    "command": cmd
+                                })
+                            st.session_state["mica_last_cmd_preview"] = all_commands
+                        # 2) 단일 subject + 모든 세션 (sessions 리스트만 오는 경우)
+                        elif isinstance(result.get("sessions"), list) and result.get("sessions"):
+                            all_commands = []
+                            for ses in result["sessions"]:
+                                individual_payload = payload.copy()
+                                # subject_id 는 payload 에 이미 들어있음
+                                individual_payload["session_id"] = ses
+                                cmd = _build_micapipe_preview(individual_payload)
+                                all_commands.append({
+                                    "subject": payload.get("subject_id"),
+                                    "session": ses or "전체",
+                                    "command": cmd,
+                                })
+                            st.session_state["mica_last_cmd_preview"] = all_commands
 
                         else:
-                            # 단일 Subject 실행 결과
-                            if result.get("success"):
-                                st.success(
-                                    result.get(
-                                        "message",
-                                        "✅ MICA Pipeline이 성공적으로 완료되었습니다!",
-                                    )
-                                )
-                            else:
-                                st.error(
-                                    f"❌ MICA Pipeline 실행 실패 "
-                                    f"(코드: {result.get('returncode', -1)})"
-                                )
-
-                            # Airflow 모드일 경우 링크 표시
-                            if result.get("mode") == "airflow":
-                                st.info(
-                                    f"""
-                                **🔄 Airflow로 실행됨**
-                                
-                                - **DAG Run ID:** `{result.get('dag_run_id', '-')}`
-                                - **User:** `{result.get('user', '-')}`
-                                - **Airflow UI:** [실행 상태 확인하기]({result.get('airflow_url', 'http://localhost:8080')})
-                                
-                                💡 Airflow UI에서 실시간 로그와 진행 상황을 확인할 수 있습니다.
-                                """
-                                )
-
-                            # 명령어 표시 (직접 실행 모드일 때만)
-                            if result.get("command"):
-                                with st.expander("실행된 명령어 보기"):
-                                    st.code(result.get("command", ""), language="bash")
-
-                            # 출력 표시
-                            if result.get("output"):
-                                with st.expander("📤 표준 출력"):
-                                    st.code(result["output"], language="text")
-
-                            # 에러 표시
-                            if result.get("error"):
-                                with st.expander("⚠️ 표준 에러"):
-                                    st.code(result["error"], language="text")
-
+                            # 단일 실행의 경우: 기존 로직
+                            cmd_preview = _build_micapipe_preview(payload)
+                            st.session_state["mica_last_cmd_preview"] = cmd_preview
+                        
+                        # === 실행 결과 요약 표시 (성공/실패) ===
+                        if result.get("success", False):
+                            msg = result.get("message") or "MICA Pipeline이 성공적으로 시작되었습니다."
+                            st.success(f"✅ 실행 성공: {msg}")
+                        else:
+                            msg = result.get("message") or "MICA Pipeline 실행 결과를 확인하세요."
+                            st.error(f"❌ 실행 실패 또는 일부 컨테이너 실패: {msg}")
+                            
                 except requests.exceptions.HTTPError as e:
                     # 409 같은 HTTP 에러 디테일 보여주기
                     status = e.response.status_code if e.response is not None else None
@@ -1031,11 +970,39 @@ def render():
         st.markdown("### 🔧 명령어 미리보기")
         _last_cmd = st.session_state.get("mica_last_cmd_preview")
 
-        if _last_cmd:
-            st.code(_last_cmd, language="bash")
-            st.caption("가장 최근에 실행한 명령어입니다.")
-        else:
+        # 아무것도 없을 때
+        if not _last_cmd:
             st.info("아직 실행한 명령이 없습니다. 탭 4에서 ▶️ **실행**을 눌러 명령어를 생성하세요.")
+        # 단일 실행(문자열)
+        elif isinstance(_last_cmd, str):
+            with st.expander("📌 최근 실행 명령어 (1개)", expanded=True):
+                st.code(_last_cmd, language="bash")
+                st.caption("가장 최근에 실행한 명령어입니다.")
+
+        # 여러 개 명령어 (FULL + multi-session 등)
+        elif isinstance(_last_cmd, list):
+            if _last_cmd and isinstance(_last_cmd[0], dict):
+                with st.expander(f"📌 최근 실행 명령어 ({len(_last_cmd)}개)", expanded=False):
+                    for idx, item in enumerate(_last_cmd, 1):
+                        subj = item.get("subject") or "-"
+                        ses = item.get("session")
+                        cmd = item.get("command") or ""
+
+                        # 헤더 결정
+                        if ses in (None, "", "전체"):
+                            header = f"{idx}. {subj} (모든 세션)"
+                        else:
+                            header = f"{idx}. {subj} (ses-{ses})"
+
+                        st.markdown(f"**{header}**")
+                        st.code(cmd, language="bash")
+
+            # 문자열 리스트
+            else:
+                with st.expander(f"📌 최근 실행 명령어 ({len(_last_cmd)}개)", expanded=False):
+                    pretty = "\n\n".join(str(c) for c in _last_cmd)
+                    st.code(pretty, language="bash")
+
 
         st.markdown("---")
         st.markdown("#### 📝 실행 로그")

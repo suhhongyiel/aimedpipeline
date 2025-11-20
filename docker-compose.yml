@@ -42,7 +42,7 @@ services:
       - "8003:8000"
     environment:
       AIRFLOW_BASE_URL: http://airflow:8080
-      AIRFLOW_DAG_ID: mri_pipeline
+      AIRFLOW_DAG_ID: mica_pipeline
       AIRFLOW_USER: admin
       AIRFLOW_PASSWORD: admin
       HOST_DATA_DIR: /home/admin1/Documents/aimedpipeline/data  # 호스트의 실제 절대 경로 (Docker-in-Docker용)
@@ -82,6 +82,7 @@ services:
       - airflow_logs:/opt/airflow/logs
       - /var/run/docker.sock:/var/run/docker.sock  # Docker 소켓 마운트 (MICA Pipeline 실행용)
       - ./data:/data  # 호스트 상대경로 -> 컨테이너 내부 절대경로 (Docker 명령어에서 동일한 경로 사용)
+      - /home/admin1/Documents/aimedpipeline/data:/home/admin1/Documents/aimedpipeline/data
     user: "0:0"
     command: >
       bash -c "
