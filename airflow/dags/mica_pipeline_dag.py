@@ -67,7 +67,7 @@ def build_docker_command(**context):
     sc_flags = conf.get('sc_flags', [])
 
     # 호스트 경로 (Docker-in-Docker를 위한 절대 경로)
-    host_data_dir = os.getenv('HOST_DATA_DIR', '/home/admin1/Documents/aimedpipeline/data')
+    host_data_dir = os.getenv('HOST_DATA_DIR', '/private/sjhwang/aimedpipeline/data')
 
     # 파라미터 추출
     subject_id = conf.get('subject_id', 'sub-001')
@@ -75,7 +75,7 @@ def build_docker_command(**context):
     processes = conf.get('processes', ['proc_structural'])
     bids_dir = conf.get('bids_dir', '/data/bids')
     output_dir = conf.get('output_dir', '/data/derivatives')
-    fs_licence = conf.get('fs_licence', '/home/admin1/Documents/aimedpipeline/data/license.txt')
+    fs_licence = conf.get('fs_licence', '/private/sjhwang/aimedpipeline/data/license.txt')
     threads = conf.get('threads', 4)
     freesurfer = conf.get('freesurfer', True)
 
@@ -130,6 +130,64 @@ def build_docker_command(**context):
         out += sorted(t for t in toggles if t not in ("-freesurfer",))
         out += passthrough
         return out
+    # command build
+    def build_micapipe_docker_cmd_for_airflow(
+        *,
+        bids_dir: str,
+        output_dir: str,
+        sub_id: str,
+        session_id: str | None,
+        processes: list[str],
+        threads: int,
+        freesurfer: bool,
+        fs_licence: str | None,
+        process_flags: str,
+        container_name: str,
+        container_log_file: str,
+        container_error_log_file: str,
+    ) -> str:
+        cmd_parts =[
+            "docker run --rm",
+            f"--name {container_name}",
+            f"-v {bids_dir}:{bids_dir}",
+            f"-v {output_dir}:{output_dir}",
+        ]
+
+        if fs_licence:
+            cmd_parts.append(f"-v {fs_licence}:{fs_licence}")
+
+        cmd_parts += [
+            "micalab/micapipe:v0.2.3",
+            f"-bids {bids_dir}",
+            f"-out {output_dir}",
+            f"-sub {sub_id}",
+        ]
+        if session_id:
+            cmd_parts.append(f"-ses {session_id}")
+
+        cmd_parts += [
+            f"-threads {threads}",
+            process_flags,
+        ]
+
+        if "proc_surf" in processes and freesurfer:
+            cmd_parts.append("-freesurfer")
+
+        if fs_licence:
+            cmd_parts.append(f"-fs_licence {fs_licence}")
+
+        # if "proc_surf" in processes:
+        #     # ✅ brain 버전 사용
+        #     t1_base_dir = f"{output_dir}/micapipe_v0.2.0/sub-{sub_id}"
+        #     if session_id:
+        #         t1_path = f"{t1_base_dir}/ses-{session_id}/anat/sub-{sub_id}_ses-{session_id}_space-nativepro_T1w_brain.nii.gz"
+        #     else:
+        #         t1_path = f"{t1_base_dir}/anat/sub-{sub_id}_space-nativepro_T1w_brain.nii.gz"
+        #     cmd_parts.append(f"-T1 {t1_path}")
+
+        docker_cmd = " ".join(cmd_parts)
+        docker_cmd += f" > {container_log_file} 2> {container_error_log_file}"
+        return docker_cmd
 
     sub_dirname = subject_id if subject_id.startswith("sub-") else f"sub-{subject_id}"
     
@@ -190,76 +248,36 @@ def build_docker_command(**context):
     # -------------------------
     # Docker 명령어 구성 분기
     # -------------------------
-    cmd_parts = [
-        "docker run --rm",
-        f"--name {container_name}",
-        f"-v {bids_dir}:{bids_dir}",
-        f"-v {output_dir}:{output_dir}",
-    ]
+    # cmd_parts = [
+    #     "docker run --rm",
+    #     f"--name {container_name}",
+    #     f"-v {bids_dir}:{bids_dir}",
+    #     f"-v {output_dir}:{output_dir}",
+    # ]
 
-    if simple_structural:
-        if must_mount_fs_licence:
-            cmd_parts.append(f"-v {fs_licence}:{fs_licence}")
+    fs_licence_for_cmd = fs_licence if must_mount_fs_licence else None
 
-        cmd_parts += [
-            "micalab/micapipe:v0.2.3",
-            f"-bids {bids_dir}",
-            f"-out {output_dir}",
-            f"-sub {sub_id}",
-        ]
-        if session_id:
-            cmd_parts.append(f"-ses {session_id}")
-            print(f"✅ DEBUG (simple_structural) - Added -ses {session_id} to command")
-        else:
-            print(f"⚠️ DEBUG (simple_structural) - session_id is empty, NOT adding -ses option")
-        cmd_parts.append("-proc_structural")
-
-        if must_mount_fs_licence:
-            cmd_parts.append(f"-fs_licence {fs_licence}")
-    else:
-        if must_mount_fs_licence:
-            cmd_parts.append(f"-v {fs_licence}:{fs_licence}")
-
-        cmd_parts += [
-            "micalab/micapipe:v0.2.3",
-            f"-bids {bids_dir}",
-            f"-out {output_dir}",
-            f"-sub {sub_id}",
-        ]
-        if session_id:
-            cmd_parts.append(f"-ses {session_id}")
-            print(f"✅ DEBUG (general) - Added -ses {session_id} to command")
-        else:
-            print(f"⚠️ DEBUG (general) - session_id is empty, NOT adding -ses option")
-
-        cmd_parts += [
-            f"-threads {threads}",
-            process_flags,
-        ]
-
-        if 'proc_surf' in processes:
-            #cmd_parts.append(f"-freesurfer {'TRUE' if freesurfer else 'FALSE'}")
-            cmd_parts.append(f"-freesurfer ")
-
-
-        # 라이선스 인자는 항상 추가
-        if must_mount_fs_licence:
-            cmd_parts.append(f"-fs_licence {fs_licence}")
-        
-        if 'proc_surf' in processes:
-            t1_base_dir = f"{output_dir}/micapipe_v0.2.0/sub-{sub_id}"
-            if session_id:
-                t1_path = f"{t1_base_dir}/ses-{session_id}/anat/sub-{sub_id}_ses-{session_id}_space-nativepro_T1w.nii.gz"
-            else:
-                t1_path = f"{t1_base_dir}/anat/sub-{sub_id}_space-nativepro_T1w.nii.gz"
-            cmd_parts.append(f"-T1 {t1_path}")    
+    docker_cmd = build_micapipe_docker_cmd_for_airflow(
+        bids_dir=bids_dir,
+        output_dir=output_dir,
+        sub_id=sub_id,
+        session_id=session_id or None,
+        processes=processes,
+        threads=threads,
+        freesurfer=freesurfer,
+        fs_licence=fs_licence_for_cmd,
+        process_flags=process_flags,
+        container_name=container_name,
+        container_log_file=container_log_file,
+        container_error_log_file=container_error_log_file,
+    )  
         
 
     # 로그 디렉토리 생성 (Airflow 컨테이너 내부 경로)
     mkdir_cmd = f"mkdir -p {container_log_base}/fin {container_log_base}/error"
 
     # Docker 실행 (로그 리다이렉션 포함 - Airflow 컨테이너 내부 경로)
-    docker_cmd = f"{' '.join(cmd_parts)} > {container_log_file} 2> {container_error_log_file}"
+    #docker_cmd = f"{' '.join(cmd_parts)} > {container_log_file} 2> {container_error_log_file}"
 
     # docker wait로 종료 대기 및 오류 탐지(필요시 강화)
     full_cmd = f"""
@@ -280,6 +298,7 @@ def build_docker_command(**context):
     ti.xcom_push(key='error_log_file', value=container_error_log_file)
 
     return full_cmd
+
 
 
 def log_completion(**context):

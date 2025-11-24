@@ -834,7 +834,7 @@ async def run_mica_pipeline(data: dict):
         user = data.get("user", "anonymous")
         
         # 호스트의 실제 데이터 경로 (환경 변수에서 가져오기)
-        base_host_data_dir = os.getenv("HOST_DATA_DIR", "/home/admin1/Documents/aimedpipeline/data")
+        base_host_data_dir = os.getenv("HOST_DATA_DIR", "/private/sjhwang/aimedpipeline/data")
         # 사용자별 경로 생성
         host_data_dir = os.path.join(base_host_data_dir, user)
         
@@ -917,6 +917,93 @@ async def run_mica_pipeline(data: dict):
             if container_path.startswith("/app/data"):
                 return container_path.replace("/app/data", host_data_dir)
             return container_path
+    
+        def build_process_flags(
+            processes: list[str],
+            post_structural_flags: list[str],
+            proc_func_flags: list[str],
+            dwi_flags: list[str],
+            sc_flags: list[str],
+        ) -> str:
+            """
+            proc_* 조합과 post_structural/func/dwi/sc 플래그를 하나의 문자열로 병합
+            """
+            base_switches = [f"-{p}" for p in processes]
+            extra_tokens = (
+                (post_structural_flags or []) +
+                (proc_func_flags or []) +
+                (dwi_flags or []) +
+                (sc_flags or [])
+            )
+            normalized = normalize_flags(extra_tokens)
+            return join_tokens(base_switches + normalized)
+
+        def build_t1_path_for_host_output(sub_id: str, session: str | None, host_output_dir: str) -> str:
+            """
+            proc_surf에서 사용할 T1 경로 (host 기준)
+            derivatives/micapipe_v0.2.0/sub-XXX[/ses-YYY]/anat/..._T1w_brain.nii.gz
+            """
+            base = f"{host_output_dir}/micapipe_v0.2.0/sub-{sub_id}"
+            if session:
+                return f"{base}/ses-{session}/anat/sub-{sub_id}_ses-{session}_space-nativepro_T1w_brain.nii.gz"
+            else:
+                return f"{base}/anat/sub-{sub_id}_space-nativepro_T1w_brain.nii.gz"
+
+        def build_micapipe_docker_cmd(
+            *,
+            host_bids_dir: str,
+            host_output_dir: str,
+            sub_id: str,
+            session: str | None,
+            processes: list[str],
+            threads: int,
+            freesurfer: bool,
+            use_fs_licence: bool,
+            host_fs_licence: str,
+            process_flags: str,
+            container_name: str,
+            log_file: str,
+            error_log_file: str,
+        ) -> str:
+            """
+            docker run ... micalab/micapipe:v0.2.3 ... > log 2> err
+            형태의 한 줄짜리 명령어를 생성
+            """
+            cmd = (
+                f"docker run --rm --name {container_name} "
+                f"-v {host_bids_dir}:{host_bids_dir} "
+                f"-v {host_output_dir}:{host_output_dir} "
+            )
+            if use_fs_licence:
+                cmd += f"-v {host_fs_licence}:{host_fs_licence} "
+
+            cmd += (
+                "micalab/micapipe:v0.2.3 "
+                f"-bids {host_bids_dir} "
+                f"-out {host_output_dir} "
+                f"-sub {sub_id} "
+            )
+            if session:
+                cmd += f"-ses {session} "
+
+            cmd += f"-threads {threads} {process_flags} "
+
+            # proc_surf → freesurfer 토글
+            if "proc_surf" in processes and freesurfer:
+                cmd += "-freesurfer "
+
+            # 라이센스 인자
+            if use_fs_licence:
+                cmd += f"-fs_licence {host_fs_licence} "
+
+            # proc_surf → T1 경로 추가
+            # if "proc_surf" in processes:
+            #     t1_path = build_t1_path_for_host_output(sub_id, session, host_output_dir)
+            #     cmd += f"-T1 {t1_path} "
+
+            cmd += f"> {log_file} 2> {error_log_file}"
+            return cmd
+
         # ---------------------------------------------------------------------
 
         # 호스트 경로로 변환
@@ -1231,87 +1318,34 @@ async def run_mica_pipeline(data: dict):
                         container_log_file = container_log_dir / "fin" / f"{container_name}.log"
                         container_error_log_file = container_log_dir / "error" / f"{container_name}_error.log"
 
-                        # ---- 분기: 미니멀 vs 일반 ----
-                        if simple_structural:
-                            use_fs_licence_min = Path(fs_licence).exists() and ('proc_structural' in processes)
-
-                            # docker run 볼륨 마운트
-                            cmd = (
-                                f"docker run --rm --name {container_name} "
-                                f"-v {host_bids_dir}:{host_bids_dir} "
-                                f"-v {host_output_dir}:{host_output_dir} "
-                            )
-                            if use_fs_licence_min:
-                                cmd += f"-v {host_fs_licence}:{host_fs_licence} "
-
-                            cmd += (
-                                "micalab/micapipe:v0.2.3 "
-                                f"-bids {host_bids_dir} "
-                                f"-out {host_output_dir} "
-                                f"-sub {sub_id} "
-                            )
-                            if ses:  # ses 변수 사용
-                                cmd += f"-ses {ses} "
-
-                            cmd += "-proc_structural "
-                            if use_fs_licence_min:
-                                cmd += f"-fs_licence {host_fs_licence} "
-
-                            cmd += f"> {container_log_file} 2> {container_error_log_file}"
-                        else:
-                            # 일반: 여러 프로세스 조합
-                            base_switches = [f"-{p}" for p in processes]
-
-                            # 옵션 플래그: post_structural + func + dwi + sc (struct/surf 옵션은 생략)
-                            extra_tokens = (
-                                #(proc_structural_flags or []) + 
-                                #(proc_surf_flags or []) + 
-                                (post_structural_flags or []) +
-                                (proc_func_flags or []) +
-                                (dwi_flags or []) +
-                                (sc_flags or [])
-                            )
-                            normalized = normalize_flags(extra_tokens)
-                            process_flags = join_tokens(base_switches + normalized)
-
-                            use_fs_licence = Path(fs_licence).exists() and (
-                                ('proc_structural' in processes) or
-                                ('proc_surf' in processes and freesurfer)
-                            )
-
-                            fs_licence_mount = ""
-                            if use_fs_licence:
-                                fs_licence_mount = f"-v {host_fs_licence}:{host_fs_licence}"
-
-                            cmd = (
-                                f"docker run --rm --name {container_name} "
-                                f"-v {host_bids_dir}:{host_bids_dir} "
-                                f"-v {host_output_dir}:{host_output_dir} "
-                            )
-                            if fs_licence_mount:
-                                cmd += f"{fs_licence_mount} "
-
-                            cmd += (
-                                "micalab/micapipe:v0.2.3 "
-                                f"-bids {host_bids_dir} "
-                                f"-out {host_output_dir} "
-                                f"-sub {sub_id} "
-                            )
-                            if ses:
-                                cmd += f"-ses {ses} "
-
-                            cmd += f"-threads {threads} {process_flags} "
-
-                            if 'proc_surf' in processes:
-                                cmd += f"-freesurfer {'TRUE' if freesurfer else 'FALSE'} "
-
-                            # 라이선스는 위 조건(use_fs_licence)일 때 항상 넘김
-                            if use_fs_licence:
-                                cmd += f"-fs_licence {host_fs_licence} "
-
-                            cmd += f"> {container_log_file} 2> {container_error_log_file}"
-                        # 명령어 리스트 추가
-                        commands.append(cmd)
+                        # ✅ 공통 플래그 및 라이센스 여부
+                        process_flags = build_process_flags(
+                            processes,
+                            post_structural_flags,
+                            proc_func_flags,
+                            dwi_flags,
+                            sc_flags,
+                        )
+                        use_fs_licence = Path(host_fs_licence).exists() and (
+                            ('proc_structural' in processes) or
+                            ('proc_surf' in processes and freesurfer)
+                        )
+                        # command build
+                        cmd =build_micapipe_docker_cmd(
+                            host_bids_dir=host_bids_dir,
+                            host_output_dir=host_output_dir,
+                            sub_id=sub_id,
+                            session=ses if ses else None,
+                            processes=processes,
+                            threads=threads,
+                            freesurfer=freesurfer,
+                            use_fs_licence=use_fs_licence,
+                            host_fs_licence=host_fs_licence,
+                            process_flags=process_flags,
+                            container_name=container_name,
+                            log_file=str(container_log_file),
+                            error_log_file=str(container_error_log_file),
+                        )
                         # 실행
                         process = subprocess.Popen(
                             cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
@@ -1419,84 +1453,35 @@ async def run_mica_pipeline(data: dict):
             container_log_file = container_log_dir / "fin" / f"{container_name}.log"
             container_error_log_file = container_log_dir / "error" / f"{container_name}_error.log"
 
-            # ---- 분기: 미니멀 vs 일반 ----
-            if simple_structural:
-                use_fs_licence_min = Path(fs_licence).exists() and ('proc_structural' in processes)
+            # ✅ 공통 플래그 및 라이센스 여부
+            process_flags = build_process_flags(
+                processes,
+                post_structural_flags,
+                proc_func_flags,
+                dwi_flags,
+                sc_flags,
+            )
+            use_fs_licence = Path(host_fs_licence).exists() and (
+                ('proc_structural' in processes) or
+                ('proc_surf' in processes and freesurfer)
+            )
 
-                # docker run 볼륨 마운트
-                cmd = (
-                    f"docker run --rm --name {container_name} "
-                    f"-v {host_bids_dir}:{host_bids_dir} "
-                    f"-v {host_output_dir}:{host_output_dir} "
-                )
-                if use_fs_licence_min:
-                    cmd += f"-v {host_fs_licence}:{host_fs_licence} "
+            cmd = build_micapipe_docker_cmd(
+                host_bids_dir=host_bids_dir,
+                host_output_dir=host_output_dir,
+                sub_id=sub_id,
+                session=actual_session if actual_session else None,
+                processes=processes,
+                threads=threads,
+                freesurfer=freesurfer,
+                use_fs_licence=use_fs_licence,
+                host_fs_licence=host_fs_licence,
+                process_flags=process_flags,
+                container_name=container_name,
+                log_file=str(container_log_file),
+                error_log_file=str(container_error_log_file),
+            )
 
-                cmd += (
-                    "micalab/micapipe:v0.2.3 "
-                    f"-bids {host_bids_dir} "
-                    f"-out {host_output_dir} "
-                    f"-sub {sub_id} "
-                )
-                if actual_session:  # 또는 ses
-                    cmd += f"-ses {actual_session} "
-
-                cmd += "-proc_structural "
-                if use_fs_licence_min:
-                    cmd += f"-fs_licence {host_fs_licence} "
-
-                cmd += f"> {container_log_file} 2> {container_error_log_file}"
-            else:
-                # 일반
-                base_switches = [f"-{p}" for p in processes]
-
-                extra_tokens = (
-                    #(proc_structural_flags or []) + 
-                    #(proc_surf_flags or []) + 
-                    (post_structural_flags or []) +
-                    (proc_func_flags or []) +
-                    (dwi_flags or []) +
-                    (sc_flags or [])
-                )
-                normalized = normalize_flags(extra_tokens)
-                process_flags = join_tokens(base_switches + normalized)
-
-                use_fs_licence = Path(fs_licence).exists() and (
-                    ('proc_structural' in processes) or
-                    ('proc_surf' in processes and freesurfer)
-                )
-
-                fs_licence_mount = ""
-                if use_fs_licence:
-                    fs_licence_mount = f"-v {host_fs_licence}:{host_fs_licence}"
-
-                cmd = (
-                    f"docker run --rm --name {container_name} "
-                    f"-v {host_bids_dir}:{host_bids_dir} "
-                    f"-v {host_output_dir}:{host_output_dir} "
-                )
-                if fs_licence_mount:
-                    cmd += f"{fs_licence_mount} "
-
-                cmd += (
-                    "micalab/micapipe:v0.2.3 "
-                    f"-bids {host_bids_dir} "
-                    f"-out {host_output_dir} "
-                    f"-sub {sub_id} "
-                )
-                if actual_session:
-                    cmd += f"-ses {actual_session} "
-
-                cmd += f"-threads {threads} {process_flags} "
-
-                if 'proc_surf' in processes:
-                    cmd += f"-freesurfer {'TRUE' if freesurfer else 'FALSE'} "
-
-                # 라이선스는 위 조건(use_fs_licence)일 때 항상 넘김
-                if use_fs_licence:
-                    cmd += f"-fs_licence {host_fs_licence} "
-
-                cmd += f"> {container_log_file} 2> {container_error_log_file}"
 
             # 실행
             process = subprocess.Popen(
