@@ -67,7 +67,7 @@ def build_docker_command(**context):
     sc_flags = conf.get('sc_flags', [])
 
     # 호스트 경로 (Docker-in-Docker를 위한 절대 경로)
-    host_data_dir = os.getenv('HOST_DATA_DIR', '/private/sjhwang/aimedpipeline/data')
+    host_data_dir = os.getenv('HOST_DATA_DIR', '/home/admin1/Documents/aimedpipeline/data')
 
     # 파라미터 추출
     subject_id = conf.get('subject_id', 'sub-001')
@@ -75,7 +75,21 @@ def build_docker_command(**context):
     processes = conf.get('processes', ['proc_structural'])
     bids_dir = conf.get('bids_dir', '/data/bids')
     output_dir = conf.get('output_dir', '/data/derivatives')
-    fs_licence = conf.get('fs_licence', '/private/sjhwang/aimedpipeline/data/license.txt')
+    #  Streamlit/FASTAPI는 보통 /app/data/... 를 쓰지만,
+    # micapipe 컨테이너는 HOST_DATA_DIR(/private/...) 기준 경로를 써야 하므로 변환
+    host_bids_dir = bids_dir
+    host_output_dir = output_dir
+
+    if host_bids_dir.startswith("/app/data"):
+        host_bids_dir = host_bids_dir.replace("/app/data", host_data_dir)
+
+    if host_output_dir.startswith("/app/data"):
+        host_output_dir = host_output_dir.replace("/app/data", host_data_dir)
+
+    print(f"🔍 DEBUG - host_bids_dir: {host_bids_dir}")
+    print(f"🔍 DEBUG - host_output_dir: {host_output_dir}")
+
+    fs_licence = conf.get('fs_licence', '/home/admin1/Documents/aimedpipeline/data/license.txt')
     threads = conf.get('threads', 4)
     freesurfer = conf.get('freesurfer', True)
 
@@ -106,7 +120,8 @@ def build_docker_command(**context):
         with_val = {"-T1wStr", "-fs_licence", "-surf_dir", "-T1", "-atlas",
                     "-mainScanStr", "-func_pe", "-func_rpe", "-mainScanRun",
                     "-phaseReversalRun", "-topupConfig", "-icafixTraining",
-                    "-sesAnat"}
+                    "-sesAnat", "-dwi_main", "-dwi_rpe", "-dwi_processed",
+                    "-weighted_SC", "-tck"}
         kv, toggles, passthrough = {}, set(), []
         it = iter(tokens)
         for t in it:
@@ -207,7 +222,7 @@ def build_docker_command(**context):
         container_name += f"_{processes[0]}"
     
     # 로그 경로
-    log_base = f"{output_dir}/logs/{processes[0] if processes else 'default'}"
+    log_base = f"{host_output_dir}/logs/{processes[0] if processes else 'default'}"
     log_file = f"{log_base}/fin/{container_name}.log"
     error_log_file = f"{log_base}/error/{container_name}_error.log"
 
@@ -258,8 +273,8 @@ def build_docker_command(**context):
     fs_licence_for_cmd = fs_licence if must_mount_fs_licence else None
 
     docker_cmd = build_micapipe_docker_cmd_for_airflow(
-        bids_dir=bids_dir,
-        output_dir=output_dir,
+        bids_dir=host_bids_dir,
+        output_dir=host_output_dir,
         sub_id=sub_id,
         session_id=session_id or None,
         processes=processes,

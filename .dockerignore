@@ -1,0 +1,21 @@
+# Ignore MICAPIPE outputs
+data/**/derivatives/
+data/**/micapipe_v0.2.0/
+data/**/micapipe_v0.2.3/
+data/**/freesurfer/
+data/**/QC/
+data/**/logs/
+
+# macOS junk
+__MACOSX/
+
+# Python junk
+__pycache__/
+*.pyc
+
+# VScode
+.vscode/
+
+# Git folders
+.git
+.gitignore
