@@ -381,10 +381,29 @@ def render():
             ############### proc_func ###############
             proc_func = st.checkbox("proc_func", value=False, help="기능적 MRI 처리")
             proc_func_args = {}
-            proc_func_flags = []
-            if proc_func:
-                proc_func_flags = ["-NSR", "-noFIX", "-dropTR"]
+            proc_func_flags: list[str] = []
 
+            if proc_func:
+                # 기본 옵션: NSR + dropTR + noFIX
+                do_nsr = True
+                do_droptr = True
+                do_nofix = True
+
+                # 필요하면 UI로 뺄 수도 있음
+                # do_nsr    = st.checkbox("NSR (백색질/CSF 회귀)", value=True)
+                # do_droptr = st.checkbox("dropTR (앞 5 TR 제거)", value=True)
+                # do_nofix  = st.checkbox("noFIX (ICA-FIX 건너뛰기)", value=True)
+
+                if do_nsr:
+                    proc_func_flags.append("-NSR")
+                if do_droptr:
+                    proc_func_flags.append("-dropTR")
+                if do_nofix:
+                    proc_func_flags.append("-noFIX")
+
+                # 🔥 BOLD 이름이 `..._task-rest_bold_bold.nii.gz` 라고 가정
+                default_main_scan = "task-rest_bold"
+                proc_func_flags += ["-mainScanStr", default_main_scan]
             ############ DWI ############   
             proc_dwi = st.checkbox("proc_dwi", value=False, help="확산 가중 영상 처리")
              # --- DWI 세부 옵션 ---
@@ -652,6 +671,35 @@ def render():
         current_user = st.session_state.get("username", "anonymous")
         st.markdown(f"**👤 사용자:** `{current_user}`")
         st.session_state.mica_user = current_user
+        # 현재 사용자 / BIDS 루트 (Streamlit 컨테이너 기준 경로)
+        bids_dir = st.session_state.get("bids_directory", f"/app/data/{current_user}/bids")
+
+        # micapipe 컨테이너에서 보이는 HOST 경로로 변환
+        # docker-compose 에서 HOST_DATA_DIR=/home/admin1/Documents/aimedpipeline/data 로 설정했다고 가정
+        host_data_dir = os.getenv("HOST_DATA_DIR", "/home/admin1/Documents/aimedpipeline/data")
+        host_bids_dir = bids_dir
+        if host_bids_dir.startswith("/app/data"):
+            host_bids_dir = host_bids_dir.replace("/app/data", host_data_dir)
+
+        # subject / session 정규화
+        subj = subject_selection or ""
+        if subj and not subj.startswith("sub-"):
+            subj = f"sub-{subj}"               # 예: "ADNI..." -> "sub-ADNI..."
+
+        ses = session_id.strip() if session_id else ""
+        ses_tag = f"ses-{ses}" if ses else ""  # 예: "M090" -> "ses-M090"
+
+        # DWI 기본 경로 자동 설정 (-dwi_main)
+        if proc_dwi and not dwi_flags:
+            if ses_tag:
+                dwi_main_path = f"{host_bids_dir}/{subj}/{ses_tag}/dwi/{subj}_{ses_tag}_dwi.nii.gz"
+            else:
+                dwi_main_path = f"{host_bids_dir}/{subj}/dwi/{subj}_dwi.nii.gz"
+
+            # micapipe 에 넘길 최종 플래그
+            dwi_flags = ["-dwi_main", dwi_main_path]
+            st.write(f"🔍 DWI 자동 경로 (HOST): {dwi_main_path}")
+
         
         # 세션 저장 (명시적으로 저장)
         st.session_state.mica_processes = selected_processes

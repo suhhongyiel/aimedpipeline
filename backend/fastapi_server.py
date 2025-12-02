@@ -834,7 +834,7 @@ async def run_mica_pipeline(data: dict):
         user = data.get("user", "anonymous")
         
         # 호스트의 실제 데이터 경로 (환경 변수에서 가져오기)
-        base_host_data_dir = os.getenv("HOST_DATA_DIR", "/private/sjhwang/aimedpipeline/data")
+        base_host_data_dir = os.getenv("HOST_DATA_DIR", "/private/boonam/98-devaimedpipeline/data")
         # 사용자별 경로 생성
         host_data_dir = os.path.join(base_host_data_dir, user)
         
@@ -880,7 +880,8 @@ async def run_mica_pipeline(data: dict):
                 "-T1wStr", "-fs_licence", "-surf_dir", "-T1", "-atlas",
                 "-mainScanStr", "-func_pe", "-func_rpe", "-mainScanRun",
                 "-phaseReversalRun", "-topupConfig", "-icafixTraining",
-                "-sesAnat"
+                "-sesAnat","-dwi_main", "-dwi_rpe", "-dwi_processed",
+                "-weighted_SC", "-tck"
             }
             kv = {}               # option -> value (마지막 값이 덮어씀)
             toggles = set()       # 토글형 모음
@@ -917,7 +918,50 @@ async def run_mica_pipeline(data: dict):
             if container_path.startswith("/app/data"):
                 return container_path.replace("/app/data", host_data_dir)
             return container_path
-    
+        from pathlib import Path
+
+        def autofill_micapipe_flags(
+            *,
+            processes: list[str],
+            sub_id: str,                # "ADNI003S6264" 처럼 'sub-' 떼고 들어오는 값
+            session: str | None,        # "M000" 같은 값 (없으면 None)
+            host_bids_dir: str,         # /private/.../data/hysuh/bids
+            proc_func_flags: list[str] | None,
+            dwi_flags: list[str] | None,
+        ) -> tuple[list[str], list[str]]:
+            """
+            proc_func / proc_dwi 가 선택됐는데 사용자가 아무 옵션도 안 준 경우,
+            기본 -mainScanStr, -dwi_main을 자동으로 채워준다.
+            이미 값이 있으면 손대지 않는다.
+            """
+            proc_func_flags = list(proc_func_flags or [])
+            dwi_flags = list(dwi_flags or [])
+
+            # ---------- 1) DWI: -dwi_main 자동 채우기 ----------
+            if "proc_dwi" in processes and "-dwi_main" not in dwi_flags:
+                subj = f"sub-{sub_id}"                 # sub-ADNI018S2180
+                ses_part = f"ses-{session}" if session else None
+
+                if ses_part:
+                    cand = Path(host_bids_dir) / subj / ses_part / "dwi" / f"{subj}_{ses_part}_dwi.nii.gz"
+                else:
+                    cand = Path(host_bids_dir) / subj / "dwi" / f"{subj}_dwi.nii.gz"
+
+                if cand.exists():
+                    dwi_flags += ["-dwi_main", str(cand)]
+                    print(f"✅ autofill: using -dwi_main {cand}")
+                else:
+                    print(f"⚠️ autofill: expected DWI at {cand} but file not found (skipping -dwi_main)")
+
+            # ---------- 2) FUNC: -mainScanStr 자동 채우기 ----------
+            if "proc_func" in processes and "-mainScanStr" not in proc_func_flags:
+                # 네 BOLD 파일이 ..._task-rest_bold.nii.gz 라고 가정
+                default_str = "task-rest_bold"
+                proc_func_flags += ["-mainScanStr", default_str]
+                print(f"✅ autofill: using -mainScanStr {default_str}")
+
+            return proc_func_flags, dwi_flags
+
         def build_process_flags(
             processes: list[str],
             post_structural_flags: list[str],
@@ -1318,6 +1362,14 @@ async def run_mica_pipeline(data: dict):
                         container_log_file = container_log_dir / "fin" / f"{container_name}.log"
                         container_error_log_file = container_log_dir / "error" / f"{container_name}_error.log"
 
+                        proc_func_flags, dwi_flags = autofill_micapipe_flags(
+                            processes=processes,
+                            sub_id=sub_id,                  # "ADNI003S6264" (sub- 없이)
+                            session=ses if ses else None,   # "M000" 같은 세션
+                            host_bids_dir=host_bids_dir,
+                            proc_func_flags=proc_func_flags,
+                            dwi_flags=dwi_flags,
+                        )
                         # ✅ 공통 플래그 및 라이센스 여부
                         process_flags = build_process_flags(
                             processes,
