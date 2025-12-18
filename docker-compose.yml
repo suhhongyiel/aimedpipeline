@@ -45,7 +45,7 @@ services:
       AIRFLOW_DAG_ID: mica_pipeline
       AIRFLOW_USER: admin
       AIRFLOW_PASSWORD: admin
-      HOST_DATA_DIR: /home/admin1/Documents/aimedpipeline/data  # 호스트의 실제 절대 경로 (Docker-in-Docker용)
+      HOST_DATA_DIR: home/admin1/Documents/aimedpipeline/data  # 호스트의 실제 절대 경로 (Docker-in-Docker용)
     volumes:
       - ./logs/backend:/app/logs
       - ./:/app/workspace
@@ -75,14 +75,14 @@ services:
       AIRFLOW__CORE__PARALLELISM: "10"  # 전역 최대 동시 실행 작업 수
       AIRFLOW__CORE__DAG_CONCURRENCY: "5"  # DAG별 최대 동시 실행 작업 수
       AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "10"  # DAG당 최대 활성 작업 수
-      HOST_DATA_DIR: /home/admin1/Documents/aimedpipeline/data  # 호스트의 실제 절대 경로 (Docker-in-Docker용)
-      PROJECT_ROOT: /home/admin1/Documents/aimedpipeline  # 프로젝트 루트 경로
+      HOST_DATA_DIR: home/admin1/Documents/aimedpipeline/data  # 호스트의 실제 절대 경로 (Docker-in-Docker용)
+      PROJECT_ROOT: home/admin1/Documents/aimedpipeline  # 프로젝트 루트 경로
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - airflow_logs:/opt/airflow/logs
       - /var/run/docker.sock:/var/run/docker.sock  # Docker 소켓 마운트 (MICA Pipeline 실행용)
       - ./data:/data  # 호스트 상대경로 -> 컨테이너 내부 절대경로 (Docker 명령어에서 동일한 경로 사용)
-      - /home/admin1/Documents/aimedpipeline/data:/home/admin1/Documents/aimedpipeline/data
+      - home/admin1/Documents/aimedpipeline/data:home/admin1/Documents/aimedpipeline/data
     user: "0:0"
     command: >
       bash -c "

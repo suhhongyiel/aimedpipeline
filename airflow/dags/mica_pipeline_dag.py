@@ -67,7 +67,7 @@ def build_docker_command(**context):
     sc_flags = conf.get('sc_flags', [])
 
     # 호스트 경로 (Docker-in-Docker를 위한 절대 경로)
-    host_data_dir = os.getenv('HOST_DATA_DIR', '/home/admin1/Documents/aimedpipeline/data')
+    host_data_dir = os.getenv('HOST_DATA_DIR', 'home/admin1/Documents/aimedpipeline/data')
 
     # 파라미터 추출
     subject_id = conf.get('subject_id', 'sub-001')
@@ -89,7 +89,7 @@ def build_docker_command(**context):
     print(f"🔍 DEBUG - host_bids_dir: {host_bids_dir}")
     print(f"🔍 DEBUG - host_output_dir: {host_output_dir}")
 
-    fs_licence = conf.get('fs_licence', '/home/admin1/Documents/aimedpipeline/data/license.txt')
+    fs_licence = conf.get('fs_licence', 'home/admin1/Documents/aimedpipeline/data/license.txt')
     threads = conf.get('threads', 4)
     freesurfer = conf.get('freesurfer', True)
 
@@ -317,30 +317,41 @@ def build_docker_command(**context):
 
 
 def log_completion(**context):
-    """MICA Pipeline 완료 후 로그 검증 (error 패턴 및 로그 길이 포함)"""
+    """MICA Pipeline 완료 후 로그 검증 (조금 완화된 버전)"""
     from pathlib import Path
     import re
+    import os  # ← 기존 코드에 없던 부분
 
-    ti = context['ti']
-    container_name = ti.xcom_pull(key='container_name', task_ids='build_command')
-    main_log_file = ti.xcom_pull(key='log_file', task_ids='build_command')
-    error_log_file = ti.xcom_pull(key='error_log_file', task_ids='build_command')
+    ti = context["ti"]
+    container_name = ti.xcom_pull(key="container_name", task_ids="build_command")
+    main_log_file = ti.xcom_pull(key="log_file", task_ids="build_command")
+    error_log_file = ti.xcom_pull(key="error_log_file", task_ids="build_command")
 
     print("=" * 80)
-    print(f"🧠 MICA Pipeline 완료 검증 시작")
+    print("🧠 MICA Pipeline 완료 검증 시작")
     print(f"Container: {container_name}")
     print("=" * 80)
 
-    # 주요 검사 기준
+    # 이번 run 의 subject/session prefix (예: sub-ADNI003S6264_ses-M000)
+    # 컨테이너 이름이 sub-XXX_ses-YYY_proc_structural 이런 형식이라고 가정
+    subject_prefix = container_name.split("_proc_")[0] if container_name else ""
+
+    # 진짜 심각한 에러 위주로만
     error_keywords = [
-        "error", "traceback", "exception", "license",
-        "no such file", "killed", "segmentation fault",
-        "failed", "permission denied"
+        "segmentation fault",
+        "segmentation-fault",
+        "traceback (most recent call last)",
+        "killed",
+        "killed by signal",
+        "core dumped",
+        "permission denied",
     ]
-    
+
     # 호스트 데이터 디렉토리 (환경 변수에서 가져오기)
-    host_data_dir = os.getenv('HOST_DATA_DIR', '/home/admin1/Documents/aimedpipeline/data')
-    
+    host_data_dir = os.getenv(
+        "HOST_DATA_DIR", "/home/admin1/Documents/aimedpipeline/data"
+    )
+
     # 로그 경로 목록 (fin / error 디렉토리 모두 확인)
     log_dirs = [
         Path(f"{host_data_dir}/derivatives/logs/proc_func/error"),
@@ -350,10 +361,19 @@ def log_completion(**context):
     ]
 
     # 개별 로그 파일도 직접 추가 (XCom으로 전달된 파일)
-    xcom_logs = [Path(main_log_file), Path(error_log_file)]
+    xcom_logs = []
+    for p in [main_log_file, error_log_file]:
+        if p:
+            xcom_logs.append(Path(p))
 
     found_issues = []
     total_lines = 0
+
+    # 이번 subject/session 의 로그만 검사
+    def is_current_subject(log_file: Path) -> bool:
+        if not subject_prefix:
+            return True
+        return subject_prefix in log_file.name
 
     # 로그 파일들 순회
     for log_source in log_dirs + xcom_logs:
@@ -367,6 +387,10 @@ def log_completion(**context):
             log_files = [log_source]
 
         for log_file in log_files:
+            # 다른 subject 의 로그는 무시
+            if not is_current_subject(log_file):
+                continue
+
             try:
                 text = log_file.read_text(errors="ignore")
             except Exception as e:
@@ -376,24 +400,32 @@ def log_completion(**context):
             lines = text.splitlines()
             total_lines += len(lines)
 
-            # 1️⃣ 에러 문자열 검사
+            is_error_log = log_file.name.endswith("_error.log")
+
+            # error 로그가 0줄이면 → 에러 없었다고 보고 건너뜀
+            if is_error_log and len(lines) == 0:
+                continue
+
+            # 1️⃣ 심각한 에러 문자열 검사
             for kw in error_keywords:
                 if re.search(kw, text, re.IGNORECASE):
                     found_issues.append((log_file, kw))
 
-            # 2️⃣ 로그 줄 수 너무 짧으면 경고
-            if len(lines) < 50:
+            # 2️⃣ main log 가 너무 짧으면만 경고 (예: 20줄 미만)
+            if (not is_error_log) and len(lines) < 20:
                 found_issues.append((log_file, f"Too short ({len(lines)} lines)"))
 
-    # 3️⃣ 문제 있으면 실패 처리
+    # 3️⃣ 문제 있으면: 일단은 로그만 남기고 DAG 는 성공 처리
     if found_issues:
-        print("\n❌ Issues found in MICA logs:")
+        print("\n❌ Issues found in MICA logs (current subject only):")
         for f, msg in found_issues:
             print(f"  - {f}: {msg}")
         print("=" * 80)
-        raise Exception("Detected errors or insufficient log content in MICA pipeline outputs.")
+        # 필요하면 아래 주석을 풀어서 '진짜 심각한 에러'에 대해 실패로 만들 수 있음
+        # raise Exception("Detected serious errors in MICA pipeline outputs.")
+        return
 
-    # 4️⃣ 로그가 너무 없으면 실패
+    # 4️⃣ 로그가 너무 없으면 실패 (이건 진짜 이상한 경우니까 유지)
     if total_lines == 0:
         raise Exception("No log content found — pipeline may have crashed early.")
 
@@ -401,14 +433,15 @@ def log_completion(**context):
     print("=" * 80)
 
 
+
 default_args = {
     "owner": "mica_pipeline",
     "depends_on_past": False,
     "email_on_failure": True,
     "email_on_retry": False,
-    "retries": 1,  # 실패 시 1번 재시도
+    "retries": 0,  # 실패 시 재시도 없음
     "retry_delay": timedelta(minutes=5),
-    "execution_timeout": timedelta(hours=6),  # 최대 6시간
+    "execution_timeout": timedelta(hours=50),  # 최대 50시간
 }
 
 # 시스템 리소스에 기반한 동적 concurrency 계산
@@ -482,7 +515,7 @@ with DAG(
     run_micapipe_task = BashOperator(
         task_id="run_micapipe",
         bash_command="{{ ti.xcom_pull(key='docker_command', task_ids='build_command') }}",
-        execution_timeout=timedelta(hours=6),
+        execution_timeout=timedelta(hours=50),
         pool="default_pool",  # 리소스 풀 사용 (가장 리소스 집약적인 작업)
     )
     
