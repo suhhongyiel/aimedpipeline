@@ -622,7 +622,7 @@ async def get_sessions(subject_id: str, bids_dir: str = "/app/data/bids"):
     """특정 Subject의 Session 목록을 가져옵니다."""
     try:
         # 호스트 데이터 디렉토리 확인
-        host_data_dir = os.getenv("HOST_DATA_DIR", "home/admin1/Documents/aimedpipeline/data")
+        host_data_dir = os.getenv("HOST_DATA_DIR", "/home/admin1/Documents/aimedpipeline/data")
         
         # Subject 디렉토리 경로 구성
         sub_dirname = subject_id if subject_id.startswith("sub-") else f"sub-{subject_id}"
@@ -834,7 +834,7 @@ async def run_mica_pipeline(data: dict):
         user = data.get("user", "anonymous")
         
         # 호스트의 실제 데이터 경로 (환경 변수에서 가져오기)
-        base_host_data_dir = os.getenv("HOST_DATA_DIR", "home/admin1/Documentsaimedpipeline/data")
+        base_host_data_dir = os.getenv("HOST_DATA_DIR", "/home/admin1/Documentsaimedpipeline/data")
         # 사용자별 경로 생성
         host_data_dir = os.path.join(base_host_data_dir, user)
         
@@ -1073,7 +1073,7 @@ async def run_mica_pipeline(data: dict):
             # 라이센스 경로 변환 (공통 경로 사용)
             # fs_licence가 /app/data로 시작하면 호스트 경로로 변환
             if fs_licence.startswith("/app/data/"):
-                # /app/data/license.txt -> home/admin1/Documents/aimedpipeline/data/license.txt
+                # /app/data/license.txt -> /home/admin1/Documents/aimedpipeline/data/license.txt
                 fs_licence_host = fs_licence.replace("/app/data", base_host_data_dir)
             elif fs_licence.startswith("/app/"):
                 # 다른 /app 경로도 변환
@@ -2135,7 +2135,7 @@ def pick_existing_data_root() -> Path:
     # 여러 경로 시도 (컨테이너 내부 경로 우선)
     possible_roots = [
         Path("/app/data"),  # 컨테이너 내부 경로 (마운트됨)
-        Path(os.getenv("HOST_DATA_DIR", "home/admin1/Documents/aimedpipeline/data")),  # 호스트 경로
+        Path(os.getenv("HOST_DATA_DIR", "/home/admin1/Documents/aimedpipeline/data")),  # 호스트 경로
     ]
     
     for root in possible_roots:

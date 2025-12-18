@@ -675,8 +675,8 @@ def render():
         bids_dir = st.session_state.get("bids_directory", f"/app/data/{current_user}/bids")
 
         # micapipe 컨테이너에서 보이는 HOST 경로로 변환
-        # docker-compose 에서 HOST_DATA_DIR=home/admin1/Documents/aimedpipeline/data 로 설정했다고 가정
-        host_data_dir = os.getenv("HOST_DATA_DIR", "home/admin1/Documents/aimedpipeline/data")
+        # docker-compose 에서 HOST_DATA_DIR=/home/admin1/Documents/aimedpipeline/data 로 설정했다고 가정
+        host_data_dir = os.getenv("HOST_DATA_DIR", "/home/admin1/Documents/aimedpipeline/data")
         host_bids_dir = bids_dir
         if host_bids_dir.startswith("/app/data"):
             host_bids_dir = host_bids_dir.replace("/app/data", host_data_dir)
@@ -829,7 +829,7 @@ def render():
 
                             host_root = os.getenv(
                                 "HOST_DATA_DIR",
-                                "home/admin1/Documents/aimedpipeline/data",
+                                "/home/admin1/Documents/aimedpipeline/data",
                             )
 
                             def to_host(p: str) -> str:

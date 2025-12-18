@@ -67,7 +67,7 @@ def build_docker_command(**context):
     sc_flags = conf.get('sc_flags', [])
 
     # 호스트 경로 (Docker-in-Docker를 위한 절대 경로)
-    host_data_dir = os.getenv('HOST_DATA_DIR', 'home/admin1/Documents/aimedpipeline/data')
+    host_data_dir = os.getenv('HOST_DATA_DIR', '/home/admin1/Documents/aimedpipeline/data')
 
     # 파라미터 추출
     subject_id = conf.get('subject_id', 'sub-001')
@@ -89,7 +89,7 @@ def build_docker_command(**context):
     print(f"🔍 DEBUG - host_bids_dir: {host_bids_dir}")
     print(f"🔍 DEBUG - host_output_dir: {host_output_dir}")
 
-    fs_licence = conf.get('fs_licence', 'home/admin1/Documents/aimedpipeline/data/license.txt')
+    fs_licence = conf.get('fs_licence', '/home/admin1/Documents/aimedpipeline/data/license.txt')
     threads = conf.get('threads', 4)
     freesurfer = conf.get('freesurfer', True)
 
