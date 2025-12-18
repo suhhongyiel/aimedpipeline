@@ -834,7 +834,7 @@ async def run_mica_pipeline(data: dict):
         user = data.get("user", "anonymous")
         
         # 호스트의 실제 데이터 경로 (환경 변수에서 가져오기)
-        base_host_data_dir = os.getenv("HOST_DATA_DIR", "/private/boonam/98-devaimedpipeline/data")
+        base_host_data_dir = os.getenv("HOST_DATA_DIR", "/home/admin1/Documentsaimedpipeline/data")
         # 사용자별 경로 생성
         host_data_dir = os.path.join(base_host_data_dir, user)
         
